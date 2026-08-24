@@ -15,7 +15,7 @@
     <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4">
       <div>
         <h1 class="text-xl font-bold text-[#d9ad52]">楚韵链迹 · 内容管理</h1>
-        <p class="mt-1 text-xs text-stone-300">投稿审核、内容举报与用户反馈</p>
+<p class="mt-1 text-xs text-stone-300">投稿审核、互动与评论管理、内容举报、用户反馈与兑换码核销</p>
       </div>
       <div class="flex gap-2">
         <a href="./index.html" class="rounded-lg border border-white/20 px-3 py-2 text-xs font-bold">返回前台</a>
@@ -45,15 +45,42 @@
           </div>
           <div id="admin-navigation" class="flex flex-wrap gap-2">
             <button id="refresh" data-admin-view="submissions" class="rounded-lg bg-[#123c3a] px-4 py-2 text-xs font-bold text-[#d9ad52]">待审投稿</button>
+            <button id="resource-binding-refresh" data-admin-view="resource-bindings" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">投稿关联</button>
             <button id="supplement-refresh" data-admin-view="supplements" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">待审补充</button>
+            <button id="comment-refresh" data-admin-view="comments" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">评论管理</button>
             <button id="report-refresh" data-admin-view="reports" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">内容举报</button>
             <button id="feedback-refresh" data-admin-view="feedback" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">用户反馈</button>
+            <button id="redemption-refresh" data-admin-view="redemptions" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">兑换码核销</button>
+            <button id="story-links-refresh" data-admin-view="story-links" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">链迹关联</button>
+            <button id="story-drafts-refresh" data-admin-view="story-drafts" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">故事草稿</button>
+            <button id="ai-status-refresh" data-admin-view="ai-status" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">AI 接口</button>
+            <button id="material-analysis-refresh" data-admin-view="material-analysis" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">材料识别</button>
+            <button id="resource-preview-refresh" data-admin-view="resource-preview" class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600">资源迁移预览</button>
           </div>
         </div>
       </div>
       <div class="flex items-center justify-between px-1">
         <h2 id="view-title" class="text-sm font-bold text-stone-800">待审投稿</h2>
         <span id="view-count" class="text-xs text-stone-400"></span>
+      </div>
+      <div id="comment-filters" class="hidden flex flex-wrap items-center gap-2 rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
+        <label class="text-xs font-bold text-stone-600" for="comment-status-filter">状态</label>
+        <select id="comment-status-filter" class="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs outline-none focus:border-[#123c3a]">
+          <option value="visible">公开中</option>
+          <option value="hidden">已隐藏</option>
+          <option value="deleted">用户已删除</option>
+          <option value="all">全部状态</option>
+        </select>
+        <label class="ml-2 text-xs font-bold text-stone-600" for="comment-target-filter">内容类型</label>
+        <select id="comment-target-filter" class="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs outline-none focus:border-[#123c3a]">
+          <option value="all">全部内容</option>
+          <option value="submission">社区投稿</option>
+          <option value="hotspot">濒危热点</option>
+          <option value="landmark">地图地标</option>
+          <option value="activity">社区活动</option>
+          <option value="content">发现内容</option>
+        </select>
+        <button id="comment-filter-apply" type="button" class="rounded-lg bg-[#123c3a] px-4 py-2 text-xs font-bold text-[#d9ad52]">应用筛选</button>
       </div>
       <div id="list" class="grid gap-4"></div>
     </section>
@@ -64,6 +91,8 @@
     const ENV_ID = "chulink-legacy-d8god1687a5d60743";
     const REGION = "ap-shanghai";
     const FUNCTION_NAME = "adminSubmissions";
+    const AI_FUNCTION_NAME = "storyWorker";
+    const MATERIAL_FUNCTION_NAME = "materialWorker";
     const app = cloudbase.init({ env: ENV_ID, region: REGION });
     const auth = app.auth({ persistence: "local" });
 
@@ -96,6 +125,36 @@
         const error = result && result.error;
         const failure = new Error(error && error.message ? error.message : "云函数返回失败");
         failure.code = error && error.code ? error.code : "FUNCTION_FAILED";
+        throw failure;
+      }
+      return result;
+    }
+
+    async function callAiWorker(data) {
+      const response = await app.callFunction({ name: AI_FUNCTION_NAME, data });
+      let result = response && response.result !== undefined ? response.result : response;
+      if (typeof result === "string") {
+        try { result = JSON.parse(result); } catch (_) {}
+      }
+      if (!result || result.ok !== true) {
+        const error = result && result.error;
+        const failure = new Error(error && error.message ? error.message : "AI 云函数返回失败");
+        failure.code = error && error.code ? error.code : "AI_FUNCTION_FAILED";
+        throw failure;
+      }
+      return result;
+    }
+
+    async function callMaterialWorker(data) {
+      const response = await app.callFunction({ name: MATERIAL_FUNCTION_NAME, data });
+      let result = response && response.result !== undefined ? response.result : response;
+      if (typeof result === "string") {
+        try { result = JSON.parse(result); } catch (_) {}
+      }
+      if (!result || result.ok !== true) {
+        const error = result && result.error;
+        const failure = new Error(error && error.message ? error.message : "材料识别云函数返回失败");
+        failure.code = error && error.code ? error.code : "MATERIAL_FUNCTION_FAILED";
         throw failure;
       }
       return result;
@@ -183,7 +242,7 @@
         const items = result.items || [];
         let urls = new Map();
         try { urls = await resolveUrls(items); } catch (_) {}
-        renderItems(items, urls);
+        renderItems(items, urls, result.resourceOptions || []);
         viewCount.textContent = `${items.length} 条`;
         message.className = "mt-2 text-xs text-emerald-700";
         message.textContent = `已读取 ${items.length} 条待审投稿。`;
@@ -291,12 +350,116 @@
 
     function setActiveView(view, title) {
       viewTitle.textContent = title;
+      const commentFilters = document.getElementById("comment-filters");
+      if (commentFilters) commentFilters.classList.toggle("hidden", view !== "comments");
       document.querySelectorAll("[data-admin-view]").forEach((button) => {
         const selected = button.dataset.adminView === view;
         button.className = selected
           ? "rounded-lg bg-[#123c3a] px-4 py-2 text-xs font-bold text-[#d9ad52]"
           : "rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-600";
       });
+    }
+
+    const commentStatusLabels = {
+      visible: "公开中",
+      hidden: "已隐藏",
+      deleted: "用户已删除"
+    };
+
+    const commentTargetLabels = {
+      submission: "社区投稿",
+      hotspot: "濒危热点",
+      landmark: "地图地标",
+      activity: "社区活动",
+      content: "发现内容"
+    };
+
+    function displayAdminDate(value) {
+      if (!value) return "时间未知";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString("zh-CN");
+    }
+
+    async function loadComments() {
+      setActiveView("comments", "评论管理");
+      const status = document.getElementById("comment-status-filter").value;
+      const targetType = document.getElementById("comment-target-filter").value;
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在读取评论...";
+      try {
+        const result = await callAdmin({ action: "listComments", status, targetType, limit: 100 });
+        const items = result.items || [];
+        renderComments(items);
+        viewCount.textContent = `${items.length} 条`;
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = `已读取 ${items.length} 条评论。`;
+      } catch (error) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    function renderComments(items) {
+      if (!items.length) {
+        list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">当前筛选条件下没有评论。</div>';
+        return;
+      }
+      list.innerHTML = items.map((item) => {
+        const canHide = item.status === "visible";
+        const canRestore = item.status === "hidden";
+        const statusClass = item.status === "visible"
+          ? "bg-emerald-50 text-emerald-700"
+          : item.status === "hidden"
+            ? "bg-red-50 text-red-700"
+            : "bg-stone-100 text-stone-500";
+        return `
+          <article data-comment-id="${escapeHtml(item.id)}" class="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="rounded-full px-2 py-1 text-[10px] font-bold ${statusClass}">${escapeHtml(commentStatusLabels[item.status] || item.status)}</span>
+                  <span class="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-bold text-stone-600">${escapeHtml(commentTargetLabels[item.targetType] || item.targetType)}</span>
+                  ${item.parentId ? '<span class="rounded-full bg-[#d9ad52]/15 px-2 py-1 text-[10px] font-bold text-[#123c3a]">回复</span>' : ''}
+                </div>
+                <h3 class="mt-2 text-sm font-bold text-stone-800">${escapeHtml(item.targetTitle || "内容讨论")}</h3>
+                <p class="mt-2 whitespace-pre-wrap break-words rounded-xl bg-stone-50 p-3 text-sm leading-relaxed text-stone-700">${escapeHtml(item.content || (item.status === "deleted" ? "该评论已由用户删除" : "无可显示内容"))}</p>
+                <p class="mt-2 break-all text-[10px] leading-relaxed text-stone-400">作者：${escapeHtml(item.authorName || "社区用户")} · ${escapeHtml(displayAdminDate(item.createdAt))}<br>评论 ID：${escapeHtml(item.id)}<br>内容对象：${escapeHtml(item.targetType)} / ${escapeHtml(item.targetId)}${item.parentId ? `<br>回复评论：${escapeHtml(item.parentId)}` : ""}</p>
+                ${(canHide || canRestore) ? '<textarea data-comment-note rows="2" placeholder="隐藏时必须填写原因；恢复时可填写说明" class="mt-3 w-full rounded-xl border border-stone-200 p-3 text-xs outline-none focus:border-[#123c3a]"></textarea>' : ''}
+              </div>
+              <div class="flex shrink-0 flex-wrap gap-2">
+                ${canHide ? '<button data-comment-status="hidden" class="rounded-lg bg-red-700 px-3 py-2 text-xs font-bold text-white">隐藏评论</button>' : ''}
+                ${canRestore ? '<button data-comment-status="visible" class="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white">恢复公开</button>' : ''}
+              </div>
+            </div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    async function moderateComment(card, status) {
+      const commentId = card.dataset.commentId;
+      const note = card.querySelector("[data-comment-note]");
+      const moderationNote = note ? note.value.trim() : "";
+      if (status === "hidden" && !moderationNote) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = "隐藏评论时必须填写处理原因。";
+        return;
+      }
+      const buttons = card.querySelectorAll("button");
+      buttons.forEach((button) => { button.disabled = true; });
+      try {
+        await callAdmin({ action: "moderateComment", commentId, status, moderationNote });
+        card.remove();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = status === "hidden" ? "评论已隐藏并记录操作日志。" : "评论已恢复公开。";
+        if (!list.querySelector("article")) {
+          list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">当前筛选条件下没有评论。</div>';
+        }
+      } catch (error) {
+        buttons.forEach((button) => { button.disabled = false; });
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
     }
 
     const reportReasonLabels = {
@@ -337,10 +500,10 @@
                 <span class="rounded-full bg-red-50 px-2 py-1 text-[10px] font-bold text-red-700">${escapeHtml(item.targetType === "comment" ? "评论举报" : "作品举报")}</span>
                 <span class="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-bold text-stone-600">${escapeHtml(reportReasonLabels[item.reason] || item.reason)}</span>
               </div>
-              <h3 class="mt-2 text-sm font-bold text-stone-800">${escapeHtml(item.submissionTitle || "未命名作品")}</h3>
+              <h3 class="mt-2 text-sm font-bold text-stone-800">${escapeHtml(item.submissionTitle || "内容讨论")}</h3>
               ${item.targetContent ? `<p class="mt-2 rounded-lg bg-stone-50 p-3 text-xs text-stone-700">被举报评论：${escapeHtml(item.targetContent)}</p>` : ""}
               <p class="mt-2 text-xs leading-relaxed text-stone-600">${escapeHtml(item.detail || "举报人未补充说明")}</p>
-              <p class="mt-2 break-all text-[10px] text-stone-400">举报人：${escapeHtml(item.reporterName || item.reporterId)}<br>作品 ID：${escapeHtml(item.submissionId)}<br>目标 ID：${escapeHtml(item.targetId)}</p>
+              <p class="mt-2 break-all text-[10px] text-stone-400">举报人：${escapeHtml(item.reporterName || item.reporterId)}<br>内容对象：${escapeHtml(item.contentTargetType || "submission")} / ${escapeHtml(item.contentTargetId || item.submissionId)}<br>举报目标 ID：${escapeHtml(item.targetId)}</p>
               <textarea data-resolution-note rows="2" placeholder="填写处理说明（可选）" class="mt-3 w-full rounded-xl border border-stone-200 p-3 text-xs outline-none focus:border-[#123c3a]"></textarea>
             </div>
             <div class="flex shrink-0 flex-wrap gap-2">
@@ -383,7 +546,14 @@
       suggestion: "产品建议",
       bug: "功能异常",
       content: "内容问题",
+      story_correction: "故事纠错",
       other: "其他"
+    };
+
+    const storyCorrectionKindLabels = {
+      content_error: "内容可能有误",
+      source_suggestion: "建议补充来源",
+      wording: "表述需要调整"
     };
 
     async function loadFeedback() {
@@ -416,11 +586,18 @@
                 <span class="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-bold text-stone-700">${escapeHtml(feedbackTypeLabels[item.type] || "其他")}</span>
                 <span class="text-[10px] text-stone-400">${escapeHtml(item.userName || "社区用户")}</span>
               </div>
+              ${item.type === "story_correction" ? `
+                <div class="mt-3 rounded-xl border border-[#b68a4a]/30 bg-[#fbf5e9] p-3 text-[10px] leading-relaxed text-stone-600">
+                  <p class="font-bold text-[#8f302b]">${escapeHtml(item.resourceTitle || "链迹故事")} · 第 ${Number(item.storyVersion || 1)} 版</p>
+                  <p class="mt-1">位置：${escapeHtml(item.chapterTitle || "整篇故事")} · ${escapeHtml(storyCorrectionKindLabels[item.correctionKind] || "故事反馈")}</p>
+                  <p class="mt-1 text-stone-400">故事 ID：${escapeHtml(item.storyId || "未记录")}</p>
+                </div>` : ""}
               <p class="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-stone-700">${escapeHtml(item.content)}</p>
               <p class="mt-2 text-[10px] text-stone-400">来源页面：${escapeHtml(item.page || "未记录")}</p>
               <textarea data-feedback-response rows="3" placeholder="填写给用户的处理回复" class="mt-3 w-full rounded-xl border border-stone-200 p-3 text-xs outline-none focus:border-[#123c3a]"></textarea>
             </div>
             <div class="flex shrink-0 flex-wrap gap-2">
+              ${item.type === "story_correction" ? '<button data-feedback-resolution="accepted_for_revision" class="rounded-lg bg-[#9e2f24] px-3 py-2 text-xs font-bold text-white">纳入故事修订</button>' : ''}
               <button data-feedback-resolution="resolved" class="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white">回复并完成</button>
               <button data-feedback-resolution="dismissed" class="rounded-lg bg-stone-200 px-3 py-2 text-xs font-bold text-stone-700">关闭</button>
             </div>
@@ -432,9 +609,9 @@
     async function resolveFeedback(card, resolution) {
       const feedbackId = card.dataset.feedbackId;
       const response = card.querySelector("[data-feedback-response]").value.trim();
-      if (resolution === "resolved" && !response) {
+      if (["resolved", "accepted_for_revision"].includes(resolution) && !response) {
         message.className = "mt-2 text-xs text-red-600";
-        message.textContent = "回复并完成时，请填写处理回复。";
+        message.textContent = "请填写给用户的处理说明。";
         return;
       }
       const buttons = card.querySelectorAll("button");
@@ -443,7 +620,7 @@
         await callAdmin({ action: "resolveFeedback", feedbackId, resolution, response });
         card.remove();
         message.className = "mt-2 text-xs text-emerald-700";
-        message.textContent = resolution === "resolved" ? "反馈已回复。" : "反馈已关闭。";
+        message.textContent = resolution === "accepted_for_revision" ? "故事反馈已纳入修订。" : resolution === "resolved" ? "反馈已回复。" : "反馈已关闭。";
         if (!list.querySelector("article")) {
           list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">当前没有待处理反馈。</div>';
         }
@@ -454,7 +631,1251 @@
       }
     }
 
-    function renderItems(items, urls) {
+    const redemptionStatusLabels = {
+      issued: "待使用",
+      redeemed: "已核销",
+      expired: "已过期",
+      cancelled: "已取消"
+    };
+
+    function redemptionStatusClass(status) {
+      return {
+        issued: "bg-emerald-50 text-emerald-700",
+        redeemed: "bg-stone-100 text-stone-600",
+        expired: "bg-amber-50 text-amber-700",
+        cancelled: "bg-red-50 text-red-700"
+      }[status] || "bg-stone-100 text-stone-600";
+    }
+
+    async function loadRedemptions() {
+      setActiveView("redemptions", "兑换码核销");
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在读取兑换记录...";
+      list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在加载核销工作台…</div>';
+      try {
+        const result = await callAdmin({ action: "listRedemptions", status: "all", limit: 50 });
+        const items = result.items || [];
+        renderRedemptionWorkbench(items);
+        viewCount.textContent = `${items.length} 条`;
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "核销工作台已就绪。";
+      } catch (error) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+        list.innerHTML = '<div class="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">核销工作台暂不可用。</div>';
+      }
+    }
+
+    function renderRedemptionWorkbench(items) {
+      const history = items.length ? items.map((item) => `
+        <article class="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-sm font-bold text-stone-800">${escapeHtml(item.rewardTitle)}</h3>
+              <p class="mt-1 text-xs text-stone-500">${escapeHtml(item.sponsor || "楚链反哺专区")}</p>
+            </div>
+            <span class="rounded-full px-2.5 py-1 text-[10px] font-bold ${redemptionStatusClass(item.status)}">${escapeHtml(redemptionStatusLabels[item.status] || item.status)}</span>
+          </div>
+          <div class="mt-3 grid gap-2 rounded-xl bg-stone-50 p-3 text-[10px] text-stone-500 sm:grid-cols-2">
+            <p>兑换码：<code class="font-bold text-[#123c3a]">${escapeHtml(item.code)}</code></p>
+            <p>用户：${escapeHtml(item.userId || "未知")}</p>
+            <p>发放：${escapeHtml(displayAdminDate(item.issuedAt))}</p>
+            <p>${item.status === "redeemed" ? `核销：${escapeHtml(displayAdminDate(item.redeemedAt))}` : `到期：${escapeHtml(displayAdminDate(item.expiresAt))}`}</p>
+          </div>
+        </article>
+      `).join("") : '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">还没有兑换记录。</div>';
+      list.innerHTML = `
+        <section class="rounded-2xl border border-[#d9ad52]/40 bg-white p-5 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-black uppercase tracking-[0.18em] text-[#d9ad52]">Redemption Desk</p>
+              <h3 class="mt-1 text-base font-bold text-stone-900">查验兑换码</h3>
+              <p class="mt-1 text-xs text-stone-500">先查询凭证状态，确认商家已交付福利后再核销。</p>
+            </div>
+            <span class="rounded-full bg-amber-50 px-3 py-1 text-[10px] font-bold text-amber-700">核销后不可重复使用</span>
+          </div>
+          <form id="redemption-lookup-form" class="mt-4 flex flex-col gap-2 sm:flex-row">
+            <input id="redemption-code-input" autocomplete="off" spellcheck="false" maxlength="40" placeholder="CHU-XXXX-XXXX-XXXX" class="min-w-0 flex-1 rounded-xl border border-stone-200 px-4 py-3 font-mono text-sm uppercase tracking-wide outline-none focus:border-[#d9ad52]" required>
+            <button type="submit" class="rounded-xl bg-[#123c3a] px-5 py-3 text-xs font-bold text-[#d9ad52]">查询凭证</button>
+          </form>
+          <p id="redemption-lookup-message" class="mt-2 min-h-4 text-xs text-stone-500"></p>
+          <div id="redemption-lookup-result"></div>
+        </section>
+        <div class="flex items-center justify-between px-1 pt-2">
+          <h3 class="text-sm font-bold text-stone-800">最近兑换记录</h3>
+          <span class="text-xs text-stone-400">仅显示脱敏兑换码</span>
+        </div>
+        ${history}
+      `;
+    }
+
+    function renderRedemptionLookup(item) {
+      const container = document.getElementById("redemption-lookup-result");
+      if (!container) return;
+      const usable = item.status === "issued";
+      container.innerHTML = `
+        <article class="mt-3 rounded-2xl border ${usable ? "border-emerald-200 bg-emerald-50/50" : "border-stone-200 bg-stone-50"} p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] text-stone-400">兑换内容</p>
+              <h4 class="mt-1 text-sm font-bold text-stone-900">${escapeHtml(item.rewardTitle)}</h4>
+              <p class="mt-1 text-xs text-stone-500">${escapeHtml(item.sponsor || "楚链反哺专区")}</p>
+            </div>
+            <span class="rounded-full px-3 py-1 text-[10px] font-bold ${redemptionStatusClass(item.status)}">${escapeHtml(redemptionStatusLabels[item.status] || item.status)}</span>
+          </div>
+          <div class="mt-3 rounded-xl bg-white p-3">
+            <p class="text-[10px] text-stone-400">已验证兑换码</p>
+            <code class="mt-1 block text-base font-black tracking-wider text-[#123c3a]">${escapeHtml(item.code)}</code>
+          </div>
+          <dl class="mt-3 grid gap-2 text-xs text-stone-600 sm:grid-cols-2">
+            <div><dt class="text-[10px] text-stone-400">用户</dt><dd>${escapeHtml(item.userId || "未知")}</dd></div>
+            <div><dt class="text-[10px] text-stone-400">兑换积分</dt><dd>${Number(item.pointsCost || 0)} 积分</dd></div>
+            <div><dt class="text-[10px] text-stone-400">发放时间</dt><dd>${escapeHtml(displayAdminDate(item.issuedAt))}</dd></div>
+            <div><dt class="text-[10px] text-stone-400">${item.status === "redeemed" ? "核销时间" : "有效期至"}</dt><dd>${escapeHtml(displayAdminDate(item.status === "redeemed" ? item.redeemedAt : item.expiresAt))}</dd></div>
+          </dl>
+          <p class="mt-3 rounded-xl bg-white p-3 text-xs leading-relaxed text-stone-600">使用说明：${escapeHtml(item.redemptionInstructions || "请确认福利已交付。")}</p>
+          ${usable ? `<button type="button" data-redeem-code="${escapeHtml(item.code)}" class="mt-3 w-full rounded-xl bg-emerald-700 py-3 text-sm font-bold text-white">确认已交付并核销</button>` : `<p class="mt-3 text-center text-xs font-bold text-stone-500">${item.status === "redeemed" ? "该凭证已使用，请勿重复交付。" : "该凭证当前不可核销。"}</p>`}
+        </article>
+      `;
+    }
+
+    async function lookupRedemption(event) {
+      event.preventDefault();
+      const input = document.getElementById("redemption-code-input");
+      const lookupMessage = document.getElementById("redemption-lookup-message");
+      const button = event.currentTarget.querySelector("button[type='submit']");
+      const code = input.value.trim().toUpperCase().replace(/\s+/g, "");
+      button.disabled = true;
+      lookupMessage.className = "mt-2 min-h-4 text-xs text-stone-500";
+      lookupMessage.textContent = "正在查验兑换码...";
+      try {
+        const result = await callAdmin({ action: "lookupRedemption", code });
+        renderRedemptionLookup(result.redemption);
+        lookupMessage.className = "mt-2 min-h-4 text-xs text-emerald-700";
+        lookupMessage.textContent = "兑换码已验证，请核对福利内容和状态。";
+      } catch (error) {
+        document.getElementById("redemption-lookup-result").innerHTML = "";
+        lookupMessage.className = "mt-2 min-h-4 text-xs text-red-600";
+        lookupMessage.textContent = `${error.code || "ERROR"}：${error.message}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function redeemCode(code, button) {
+      if (!confirm("请确认商家已向用户交付对应福利。\n\n核销后该兑换码将立即失效，确定继续吗？")) return;
+      button.disabled = true;
+      button.textContent = "正在核销...";
+      try {
+        const result = await callAdmin({ action: "redeemRewardCode", code });
+        renderRedemptionLookup(result.redemption);
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = `核销成功：${result.redemption.rewardTitle}`;
+        viewCount.textContent = "刚刚完成 1 笔核销";
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "确认已交付并核销";
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    function renderResourceSeedPreview(result) {
+      const items = Array.isArray(result.items) ? result.items : [];
+      const missing = Math.max(0, Number(result.missing || 0));
+      const rows = items.map((item) => `
+        <tr class="border-t border-stone-100">
+          <td class="px-3 py-2.5 font-mono text-[10px] text-stone-500">${escapeHtml(item.id)}</td>
+          <td class="px-3 py-2.5 text-xs font-bold text-stone-800">${escapeHtml(item.title)}</td>
+          <td class="px-3 py-2.5 text-xs text-stone-500">${escapeHtml(item.type)}</td>
+          <td class="px-3 py-2.5 text-xs">
+            ${!item.exists
+              ? '<span class="rounded-full bg-blue-50 px-2 py-1 font-bold text-blue-700">待新增</span>'
+              : item.differs
+                ? '<span class="rounded-full bg-amber-50 px-2 py-1 font-bold text-amber-700">已存在且有差异</span>'
+                : '<span class="rounded-full bg-emerald-50 px-2 py-1 font-bold text-emerald-700">已存在</span>'}
+          </td>
+        </tr>
+      `).join("");
+
+      list.innerHTML = `
+        <section class="rounded-2xl border border-blue-200 bg-blue-50/50 p-5 shadow-sm">
+          <p class="text-[10px] font-black uppercase tracking-[0.18em] text-blue-700">Read-only Preview</p>
+          <h3 class="mt-1 text-base font-bold text-stone-900">统一资源模型迁移预览</h3>
+          <p class="mt-2 text-xs leading-relaxed text-stone-600">本页面只比较资源种子与云数据库，不执行导入，不更新、不覆盖、不删除任何已有数据。</p>
+          <div class="mt-4 grid gap-3 sm:grid-cols-4">
+            <div class="rounded-xl bg-white p-3"><p class="text-[10px] text-stone-400">种子总数</p><p class="mt-1 text-xl font-black text-stone-900">${Number(result.total || 0)}</p></div>
+            <div class="rounded-xl bg-white p-3"><p class="text-[10px] text-stone-400">待新增</p><p class="mt-1 text-xl font-black text-blue-700">${Number(result.missing || 0)}</p></div>
+            <div class="rounded-xl bg-white p-3"><p class="text-[10px] text-stone-400">已存在</p><p class="mt-1 text-xl font-black text-emerald-700">${Number(result.existing || 0)}</p></div>
+            <div class="rounded-xl bg-white p-3"><p class="text-[10px] text-stone-400">内容差异</p><p class="mt-1 text-xl font-black text-amber-700">${Number(result.differing || 0)}</p></div>
+          </div>
+          <div class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs leading-relaxed text-emerald-800">
+            当前写入策略：只创建缺失资源。已存在和有差异的资源都会跳过；用户投稿 submissions 不在本次迁移范围内。
+          </div>
+          ${missing > 0 ? `
+            <div data-resource-import-card class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="text-xs font-bold text-amber-900">确认预览无误后，可导入 ${missing} 条缺失资源</p>
+                  <p class="mt-1 text-[10px] leading-relaxed text-amber-700">点击后将在页面内展开确认栏；导入不会覆盖已有资源，也不会处理用户投稿。</p>
+                </div>
+                <button type="button" data-resource-seed-prepare class="rounded-lg bg-[#123c3a] px-4 py-2 text-xs font-bold text-[#d9ad52]">导入缺失资源</button>
+              </div>
+              <div data-resource-confirm-panel class="mt-3 hidden rounded-lg border border-amber-200 bg-white p-3">
+                <label class="text-[10px] font-bold text-stone-600">请输入“导入${missing}条资源”确认</label>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <input data-resource-confirm-input data-expected="导入${missing}条资源" autocomplete="off" class="min-w-[220px] flex-1 rounded-lg border border-stone-200 px-3 py-2 text-xs outline-none focus:border-[#123c3a]" placeholder="导入${missing}条资源">
+                  <button type="button" data-resource-seed-import data-missing="${missing}" disabled class="rounded-lg bg-[#123c3a] px-4 py-2 text-xs font-bold text-[#d9ad52] disabled:cursor-not-allowed disabled:opacity-40">确认导入</button>
+                  <button type="button" data-resource-seed-cancel class="rounded-lg border border-stone-200 bg-white px-4 py-2 text-xs font-bold text-stone-500">取消</button>
+                </div>
+              </div>
+            </div>
+          ` : `
+            <div class="mt-4 rounded-xl border border-emerald-200 bg-white p-3 text-xs font-bold text-emerald-700">统一资源已经全部存在，无需再次导入。</div>
+          `}
+        </section>
+        <div class="overflow-x-auto rounded-2xl border border-stone-200 bg-white shadow-sm">
+          <table class="w-full min-w-[680px] text-left">
+            <thead class="bg-stone-50 text-[10px] uppercase tracking-wide text-stone-400">
+              <tr><th class="px-3 py-2.5">资源 ID</th><th class="px-3 py-2.5">名称</th><th class="px-3 py-2.5">类型</th><th class="px-3 py-2.5">云端状态</th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function resourceBindingSelectHtml(item, resourceOptions, selectClass = "") {
+      const selectedId = String(item.resourceId || "");
+      const candidates = Array.isArray(item.resourceCandidates) ? item.resourceCandidates : [];
+      const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+      const optionById = new Map((resourceOptions || []).map((option) => [option.id, option]));
+      const selectedMissing = selectedId && !optionById.has(selectedId);
+      const candidateOptions = candidates.map((candidate) => {
+        const reason = (candidate.reasons || []).slice(0, 1).join(" · ");
+        return `<option value="${escapeHtml(candidate.id)}" ${selectedId === candidate.id ? "selected" : ""}>候选：${escapeHtml(candidate.title)}${reason ? `｜${escapeHtml(reason)}` : ""}</option>`;
+      }).join("");
+      const otherOptions = (resourceOptions || [])
+        .filter((option) => !candidateIds.has(option.id))
+        .map((option) => `<option value="${escapeHtml(option.id)}" ${selectedId === option.id ? "selected" : ""}>${escapeHtml(option.regionName ? `${option.regionName}｜` : "")}${escapeHtml(option.title)}</option>`)
+        .join("");
+      return `
+        <select data-resource-binding-select class="${selectClass} w-full rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-xs outline-none focus:border-[#123c3a]">
+          <option value="" ${selectedId ? "" : "selected"}>暂不关联资源</option>
+          ${selectedMissing ? `<option value="${escapeHtml(selectedId)}" selected>当前关联：${escapeHtml(selectedId)}</option>` : ""}
+          ${candidateOptions}
+          ${otherOptions}
+        </select>`;
+    }
+
+    function resourceCandidateHint(item) {
+      const candidate = Array.isArray(item.resourceCandidates) ? item.resourceCandidates[0] : null;
+      if (!candidate) return "系统未找到可靠候选，可留空或由管理员手动选择。";
+      const reasons = (candidate.reasons || []).join(" · ");
+      return `候选首位：${candidate.title}${reasons ? `（${reasons}）` : ""}。系统不会自动绑定，请人工确认。`;
+    }
+
+    async function loadResourceBindings() {
+      setActiveView("resource-bindings", "已通过投稿关联");
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在读取已通过投稿和资源候选...";
+      list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在准备投稿关联工作台…</div>';
+      try {
+        const result = await callAdmin({ action: "list", status: "approved", limit: 50 });
+        const items = result.items || [];
+        renderResourceBindingItems(items, result.resourceOptions || []);
+        viewCount.textContent = `${items.length} 条`;
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "只保存管理员明确选择的资源；留空不会自动归类。";
+      } catch (error) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    function renderResourceBindingItems(items, resourceOptions) {
+      if (!items.length) {
+        list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">当前没有已通过投稿。</div>';
+        return;
+      }
+      list.innerHTML = items.map((item) => `
+        <article data-binding-submission-id="${escapeHtml(item.id)}" class="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="font-bold text-stone-900">${escapeHtml(item.title || "未命名投稿")}</h3>
+                <span class="rounded-full ${item.resourceId ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"} px-2 py-1 text-[10px] font-bold">${item.resourceId ? "已关联" : "待关联"}</span>
+              </div>
+              <p class="mt-1 text-xs leading-relaxed text-stone-500">${escapeHtml(item.description || "未填写说明")}</p>
+              <p class="mt-2 text-[10px] text-stone-400">投稿 ID：${escapeHtml(item.id)} · ${escapeHtml(item.regionName || "湖北")}</p>
+            </div>
+          </div>
+          <div class="mt-3 rounded-xl border border-stone-200 bg-stone-50 p-3">
+            <p class="mb-2 text-[10px] leading-relaxed text-stone-500">${escapeHtml(resourceCandidateHint(item))}</p>
+            <div class="flex flex-col gap-2 sm:flex-row">
+              ${resourceBindingSelectHtml(item, resourceOptions, "flex-1")}
+              <button type="button" data-save-resource-binding class="shrink-0 rounded-xl bg-[#123c3a] px-4 py-2.5 text-xs font-bold text-[#d9ad52]">保存关联</button>
+            </div>
+          </div>
+        </article>
+      `).join("");
+    }
+
+    async function saveResourceBinding(card, button) {
+      const submissionId = card.dataset.bindingSubmissionId;
+      const select = card.querySelector("[data-resource-binding-select]");
+      const resourceId = select ? select.value : "";
+      button.disabled = true;
+      try {
+        const result = await callAdmin({ action: "bindSubmissionResource", submissionId, resourceId });
+        const successMessage = result.resourceId
+          ? `已将投稿关联到：${result.resourceTitle || result.resourceId}`
+          : "已取消这条投稿的资源关联。";
+        await loadResourceBindings();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = successMessage;
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    function showResourceSeedConfirmation(button) {
+      const card = button.closest("[data-resource-import-card]");
+      if (!card) return;
+      const panel = card.querySelector("[data-resource-confirm-panel]");
+      const input = card.querySelector("[data-resource-confirm-input]");
+      button.classList.add("hidden");
+      panel.classList.remove("hidden");
+      input.focus();
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "请在页面确认栏输入指定文字。尚未写入数据。";
+    }
+
+    function cancelResourceSeedConfirmation(button) {
+      const card = button.closest("[data-resource-import-card]");
+      if (!card) return;
+      const panel = card.querySelector("[data-resource-confirm-panel]");
+      const prepareButton = card.querySelector("[data-resource-seed-prepare]");
+      const input = card.querySelector("[data-resource-confirm-input]");
+      const importButton = card.querySelector("[data-resource-seed-import]");
+      input.value = "";
+      importButton.disabled = true;
+      panel.classList.add("hidden");
+      prepareButton.classList.remove("hidden");
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "已取消资源导入，没有写入数据。";
+    }
+
+    async function applyResourceSeed(button) {
+      const missing = Math.max(0, Number(button.dataset.missing || 0));
+      if (!missing) return;
+      const confirmationText = `导入${missing}条资源`;
+      const card = button.closest("[data-resource-import-card]");
+      const input = card && card.querySelector("[data-resource-confirm-input]");
+      if (!input || input.value.trim() !== confirmationText) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `确认文字不匹配，请输入“${confirmationText}”。`;
+        return;
+      }
+      button.disabled = true;
+      button.textContent = "正在导入...";
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在创建缺失资源，请勿重复操作...";
+      try {
+        const result = await callAdmin({
+          action: "applyResourceSeed",
+          confirmToken: "IMPORT_RESOURCES_V1"
+        });
+        await loadResourceSeedPreview();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = `资源导入完成：新增 ${Number(result.created || 0)}，跳过 ${Number(result.skipped || 0)}，更新 0，删除 0。`;
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "导入缺失资源";
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    const storyRelationLabels = {
+      documents_feature: "记录建筑或工艺特征",
+      documents_inscription: "记录题刻或文字",
+      documents_place: "记录地点现状",
+      documents_oral_history: "记录口述与回忆",
+      shows_change_over_time: "呈现时间变化",
+      supports_story: "补充故事线索"
+    };
+
+    function renderStoryLinkWorkspace(result) {
+      const submissions = result.submissions || [];
+      const resources = result.resources || [];
+      const links = result.links || [];
+      const confirmedLinks = links.filter((item) => item.status === "confirmed");
+      const archivedLinks = links.filter((item) => item.status === "archived");
+      const submissionOptions = submissions.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)} · ${escapeHtml(item.contributorName)}</option>`).join("");
+      const resourceOptions = resources.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)} · ${escapeHtml(item.type)}</option>`).join("");
+      const linkCards = confirmedLinks.length ? confirmedLinks.map((item) => `
+        <article data-story-link-id="${escapeHtml(item.id)}" class="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700">已确认链迹</p>
+              <h3 class="mt-1 font-bold text-stone-800">${escapeHtml(item.submissionTitle)} <span class="text-stone-300">→</span> ${escapeHtml(item.resourceTitle)}</h3>
+              <p class="mt-1 text-xs text-stone-500">${escapeHtml(storyRelationLabels[item.relationType] || "补充故事线索")} · 第 ${Number(item.version || 1)} 版</p>
+            </div>
+            <span class="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700">公开可见</span>
+          </div>
+          <p class="mt-3 rounded-xl bg-stone-50 p-3 text-sm leading-relaxed text-stone-700">${escapeHtml(item.evidenceSummary)}</p>
+          <div class="mt-3 flex flex-col gap-2 border-t border-stone-100 pt-3 sm:flex-row">
+            <input data-story-archive-reason class="min-w-0 flex-1 rounded-lg border border-stone-200 px-3 py-2 text-xs outline-none focus:border-[#123c3a]" placeholder="如果关系不准确，请填写归档原因">
+            <button type="button" data-story-link-archive class="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700">归档关系</button>
+          </div>
+        </article>
+      `).join("") : '<div class="rounded-2xl border border-dashed border-stone-300 bg-white p-6 text-sm text-stone-500">尚未建立链迹关系。先从上方选择一份已审核投稿和一个文化资源。</div>';
+
+      list.innerHTML = `
+        <section class="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-5 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-bold uppercase tracking-[0.22em] text-emerald-700">楚韵链迹 · 第一阶段</p>
+              <h3 class="mt-1 text-lg font-bold text-stone-900">把用户资料连到真实文化资源</h3>
+              <p class="mt-1 max-w-3xl text-xs leading-relaxed text-stone-600">只处理已审核投稿。确认后用户可以看到资料来源；原投稿和资源均不会被覆盖或删除。</p>
+            </div>
+            <div class="flex gap-2 text-center text-xs">
+              <div class="rounded-xl bg-white px-3 py-2"><strong class="block text-base text-[#123c3a]">${submissions.length}</strong>可关联投稿</div>
+              <div class="rounded-xl bg-white px-3 py-2"><strong class="block text-base text-[#123c3a]">${confirmedLinks.length}</strong>已确认关系</div>
+            </div>
+          </div>
+          <form id="story-link-form" class="mt-5 grid gap-3 lg:grid-cols-2">
+            <label class="text-xs font-bold text-stone-600">已审核投稿
+              <select name="submissionId" ${submissions.length ? "" : "disabled"} class="mt-1 w-full rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm outline-none focus:border-[#123c3a]">
+                ${submissionOptions || '<option value="">当前没有已审核投稿</option>'}
+              </select>
+            </label>
+            <label class="text-xs font-bold text-stone-600">文化资源
+              <select name="resourceId" ${resources.length ? "" : "disabled"} class="mt-1 w-full rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm outline-none focus:border-[#123c3a]">
+                ${resourceOptions || '<option value="">当前没有已发布资源</option>'}
+              </select>
+            </label>
+            <label class="text-xs font-bold text-stone-600">关系类型
+              <select name="relationType" class="mt-1 w-full rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm outline-none focus:border-[#123c3a]">
+                ${Object.entries(storyRelationLabels).map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}
+              </select>
+            </label>
+            <label class="text-xs font-bold text-stone-600">关系说明
+              <textarea name="evidenceSummary" rows="3" class="mt-1 w-full rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm outline-none focus:border-[#123c3a]" placeholder="例如：这张照片记录了黄鹤楼东侧题刻在 2026 年的保存状态。"></textarea>
+            </label>
+            <div class="lg:col-span-2 flex items-center justify-between gap-3">
+              <p class="text-[10px] text-stone-500">保存会留下管理员、时间和版本记录；错误关系请归档，不执行物理删除。</p>
+              <button type="submit" ${submissions.length && resources.length ? "" : "disabled"} class="rounded-xl bg-[#123c3a] px-5 py-3 text-xs font-bold text-[#d9ad52] disabled:cursor-not-allowed disabled:opacity-40">确认建立链迹</button>
+            </div>
+          </form>
+        </section>
+        <div class="flex items-center justify-between px-1"><h3 class="text-sm font-bold text-stone-800">已确认关系</h3><span class="text-xs text-stone-400">另有 ${archivedLinks.length} 条已归档</span></div>
+        ${linkCards}
+      `;
+    }
+
+    async function loadStoryLinks() {
+      setActiveView("story-links", "链迹关联");
+      viewCount.textContent = "正在读取";
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在读取已审核投稿、文化资源和链迹关系...";
+      list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在准备链迹工作台...</div>';
+      try {
+        const result = await callAdmin({ action: "getStoryLinkWorkspace" });
+        renderStoryLinkWorkspace(result);
+        viewCount.textContent = `${Number(result.counts && result.counts.confirmedLinks || 0)} 条关系`;
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "链迹工作台已同步。";
+      } catch (error) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+        list.innerHTML = '<div class="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">链迹工作台暂不可用，没有修改任何投稿或资源。</div>';
+      }
+    }
+
+    async function saveStoryLink(event) {
+      event.preventDefault();
+      const form = event.target;
+      const button = form.querySelector('button[type="submit"]');
+      const data = new FormData(form);
+      button.disabled = true;
+      try {
+        await callAdmin({
+          action: "saveStoryEvidenceLink",
+          submissionId: data.get("submissionId"),
+          resourceId: data.get("resourceId"),
+          relationType: data.get("relationType"),
+          evidenceSummary: data.get("evidenceSummary")
+        });
+        await loadStoryLinks();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "链迹关系已确认，用户端现在可以看到这份资料来源。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function archiveStoryLink(card) {
+      const archiveReason = card.querySelector("[data-story-archive-reason]").value.trim();
+      const button = card.querySelector("[data-story-link-archive]");
+      button.disabled = true;
+      try {
+        await callAdmin({ action: "archiveStoryEvidenceLink", linkId: card.dataset.storyLinkId, archiveReason });
+        await loadStoryLinks();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "关系已归档并停止公开，原投稿仍然保留。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    function renderStoryDraftWorkspace(result) {
+      const resources = result.resources || [];
+      const drafts = result.drafts || [];
+      const claims = result.claimWorkspace && result.claimWorkspace.claims || [];
+      const claimSources = new Map((result.claimWorkspace && result.claimWorkspace.sources || []).map((source) => [source.id, source]));
+      const revisionImpacts = new Map((result.impactWorkspace && result.impactWorkspace.stories || []).map((item) => [item.storyId, item]));
+      const gapTasks = result.gapTaskWorkspace && result.gapTaskWorkspace.tasks || [];
+      const claimStatusLabels = { supported: "已有依据", needs_evidence: "待补依据", disputed: "存在争议" };
+      const renderClaimTools = (draft) => {
+        const storyClaims = claims.filter((claim) => claim.storyId === draft.id);
+        const claimForms = (draft.chapters || []).map((chapter, chapterIndex) => {
+          const chapterClaims = storyClaims.filter((claim) => Number(claim.chapterIndex) === chapterIndex);
+          const sourceChoices = (chapter.sourceLinkIds || []).map((linkId) => {
+            const source = claimSources.get(linkId) || {};
+            return `<label class="flex items-start gap-2 rounded-lg border border-stone-200 bg-white p-2 text-[10px] text-stone-600"><input type="checkbox" name="sourceLinkIds" value="${escapeHtml(linkId)}" class="mt-0.5"> <span><strong class="block text-stone-700">${escapeHtml(source.label || "社区资料")}</strong><span class="mt-0.5 block leading-4 text-stone-400">${escapeHtml(source.evidenceSummary || linkId)}</span></span></label>`;
+          }).join("");
+          return `<section class="rounded-xl border border-stone-200 bg-stone-50 p-3">
+            <div class="flex items-center justify-between gap-2"><strong class="text-xs text-stone-800">第 ${chapterIndex + 1} 章 · ${escapeHtml(chapter.title)}</strong><span class="text-[9px] text-stone-400">${chapterClaims.length} 条事实</span></div>
+            <p class="mt-2 rounded-lg bg-white p-3 text-[10px] leading-5 text-stone-500">${escapeHtml(chapter.body)}</p>
+            <form data-story-claim-form data-story-id="${escapeHtml(draft.id)}" data-chapter-index="${chapterIndex}" class="mt-3 space-y-2">
+              <textarea name="claimText" rows="2" class="w-full rounded-lg border border-stone-200 bg-white p-3 text-xs leading-relaxed outline-none focus:border-[#9e2f24]" placeholder="从上方正文完整复制一句需要标注依据的话"></textarea>
+              <div class="grid gap-2 sm:grid-cols-2">${sourceChoices}</div>
+              <div class="flex flex-wrap items-center gap-2"><select name="status" class="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs"><option value="supported">确认已有依据</option><option value="needs_evidence">标记待补依据</option><option value="disputed">标记存在争议</option></select><button type="submit" class="rounded-lg bg-[#9e2f24] px-4 py-2 text-xs font-bold text-white">保存句级依据</button></div>
+            </form>
+            ${chapterClaims.length ? `<div class="mt-3 space-y-2">${chapterClaims.map((claim) => `<article data-story-claim-id="${escapeHtml(claim.id)}" class="rounded-lg border border-[#d8c6a7] bg-white p-3"><div class="flex flex-wrap items-start justify-between gap-2"><p class="min-w-0 flex-1 text-[10px] leading-5 text-stone-700">${escapeHtml(claim.claimText)}</p><span class="rounded-full bg-amber-50 px-2 py-1 text-[9px] font-bold text-amber-800">${escapeHtml(claimStatusLabels[claim.status] || claim.status)}</span></div><div class="mt-2 flex gap-2"><input data-story-claim-retire-reason class="min-w-0 flex-1 rounded-lg border border-stone-200 px-2 py-1.5 text-[10px]" placeholder="停用原因"><button type="button" data-story-claim-retire class="rounded-lg border border-red-200 px-3 py-1.5 text-[10px] font-bold text-red-700">停用</button></div></article>`).join("")}</div>` : ""}
+          </section>`;
+        }).join("");
+        return `<details class="mt-4 rounded-xl border border-[#d8c6a7] bg-[#fffaf1] p-4"><summary class="cursor-pointer text-xs font-bold text-[#7d2b23]">事实依据标注 · ${storyClaims.length} 条</summary><p class="mt-2 text-[10px] leading-relaxed text-stone-500">只标注可被原始材料直接支持的句子。复制正文原句、勾选对应来源后保存；用户会在句末看到“依据”。</p><div class="mt-3 grid gap-3">${claimForms}</div></details>`;
+      };
+      const renderRevisionStarter = (draft) => `<details class="mt-4 rounded-xl border border-[#9e2f24]/20 bg-[#9e2f24]/5 p-4"><summary class="cursor-pointer text-xs font-bold text-[#7d2b23]">只修订一个章节</summary><p class="mt-2 text-[10px] leading-relaxed text-stone-500">系统会复制当前发布版并锁定其他内容。旧版本继续保留，直到新版本审核发布。</p><form data-story-revision-form data-story-id="${escapeHtml(draft.id)}" class="mt-3 grid gap-2 sm:grid-cols-[minmax(0,180px)_1fr_auto]"><select name="targetChapterIndex" class="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs">${(draft.chapters || []).map((chapter, index) => `<option value="${index}">第 ${index + 1} 章 · ${escapeHtml(chapter.title)}</option>`).join("")}</select><input name="revisionReason" class="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs" placeholder="为什么要修订，例如：新增修缮记录"><button type="submit" class="rounded-lg bg-[#9e2f24] px-4 py-2 text-xs font-bold text-white">创建局部修订</button></form></details>`;
+      const renderGapTaskTools = (draft) => {
+        const tasks = gapTasks.filter((task) => task.storyId === draft.id);
+        const activeTasks = tasks.filter((task) => task.status === "published");
+        const typeLabels = { image: "现场照片", audio: "口述录音", video: "现场视频", any: "任意素材" };
+        return `<details class="mt-4 rounded-xl border border-[#b68a4a]/35 bg-[#fffaf1] p-4"><summary class="cursor-pointer text-xs font-bold text-[#7d2b23]">定向资料征集 · ${activeTasks.length} 项进行中</summary>
+          <p class="mt-2 text-[10px] leading-5 text-stone-500">任务会出现在这篇故事下方。用户投稿后仍需人工审核；积分不会自动发放，采纳完成后还要单独确认。</p>
+          <form data-story-gap-task-form data-story-id="${escapeHtml(draft.id)}" class="mt-3 grid gap-2 rounded-xl border border-stone-200 bg-white p-3 sm:grid-cols-2">
+            <input name="title" maxlength="48" required class="rounded-lg border border-stone-200 px-3 py-2 text-xs" placeholder="任务标题，例如：补拍花窗背面榫卯">
+            <select name="chapterIndex" class="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs"><option value="">对应整篇故事</option>${(draft.chapters || []).map((chapter, index) => `<option value="${index}">第 ${index + 1} 章 · ${escapeHtml(chapter.title)}</option>`).join("")}</select>
+            <textarea name="description" maxlength="360" required rows="3" class="rounded-lg border border-stone-200 p-3 text-xs leading-5 sm:col-span-2" placeholder="说清楚需要拍什么、从什么角度拍，或希望口述者回答什么问题。"></textarea>
+            <select name="requestedAssetType" class="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs"><option value="image">现场照片</option><option value="audio">口述录音</option><option value="video">现场视频</option><option value="any">任意素材</option></select>
+            <div class="flex gap-2"><input name="rewardPoints" type="number" min="0" max="500" value="200" class="min-w-0 flex-1 rounded-lg border border-stone-200 px-3 py-2 text-xs" aria-label="建议积分"><button type="submit" class="rounded-lg bg-[#241a17] px-4 py-2 text-xs font-bold text-[#e3bd69]">发布任务</button></div>
+          </form>
+          ${tasks.length ? `<div class="mt-3 space-y-2">${tasks.map((task) => {
+            const rewardPending = task.status === "fulfilled" && task.rewardStatus === "pending_manual_confirmation" && Number(task.rewardPoints || 0) > 0;
+            const rewardAwarded = task.rewardStatus === "awarded";
+            const statusLabel = task.status === "published" ? "征集中" : task.status === "fulfilled" ? "已采纳" : "已停止";
+            return `<article data-story-gap-task-id="${escapeHtml(task.id)}" class="rounded-xl border ${task.status === "published" ? "border-[#b68a4a]/30 bg-white" : rewardAwarded ? "border-emerald-200 bg-emerald-50/40" : "border-stone-200 bg-stone-50"} p-3"><div class="flex flex-wrap items-start justify-between gap-2"><div><div class="flex gap-2"><span class="rounded-full bg-stone-100 px-2 py-1 text-[9px] font-bold text-stone-500">${statusLabel}</span><span class="rounded-full bg-[#9e2f24]/5 px-2 py-1 text-[9px] text-[#7d2b23]">${escapeHtml(typeLabels[task.requestedAssetType] || "资料")}</span></div><h4 class="mt-2 text-xs font-bold text-stone-800">${escapeHtml(task.title)}</h4><p class="mt-1 text-[10px] leading-5 text-stone-500">${escapeHtml(task.description)}</p><p class="mt-1 text-[9px] ${rewardAwarded ? "font-bold text-emerald-700" : "text-stone-400"}">${rewardAwarded ? `额外 ${Number(task.rewardPoints || 0)} 积分已发放` : `建议 ${Number(task.rewardPoints || 0)} 积分 · 审核采纳后人工确认`}</p></div>${task.status === "published" ? `<button type="button" data-story-gap-task-archive class="rounded-lg border border-red-200 px-3 py-2 text-[10px] font-bold text-red-700">停止征集</button>` : ""}</div>${task.status === "published" ? `<div class="mt-3 flex gap-2 border-t border-stone-100 pt-3"><input data-story-gap-task-submission class="min-w-0 flex-1 rounded-lg border border-stone-200 px-3 py-2 text-[10px]" placeholder="已审核通过的投稿 ID"><button type="button" data-story-gap-task-fulfill class="rounded-lg border border-emerald-200 px-3 py-2 text-[10px] font-bold text-emerald-700">确认采用这份资料</button></div>` : rewardPending ? `<div class="mt-3 flex items-center justify-between gap-3 border-t border-amber-200 pt-3"><p class="text-[10px] leading-5 text-amber-800">资料已采用，额外积分尚未发放。请再次确认贡献质量。</p><button type="button" data-story-gap-task-award class="shrink-0 rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white">确认发放 ${Number(task.rewardPoints || 0)} 积分</button></div>` : ""}</article>`;
+          }).join("")}</div>` : ""}
+        </details>`;
+      };
+      const renderPublishedRevision = (draft) => {
+        if (draft.revisionMode !== "section_patch" || !draft.revisionSummary) return "";
+        const diff = draft.revisionDiff || {};
+        return `<details class="mt-4 rounded-xl border border-[#b68a4a]/30 bg-[#fffaf1] p-4"><summary class="cursor-pointer text-xs font-bold text-[#7d2b23]">第 ${Number(draft.version || 1)} 版修订记录</summary><p class="mt-2 text-xs leading-relaxed text-stone-700">${escapeHtml(draft.revisionSummary)}</p>${diff.before && diff.after ? `<div class="mt-3 grid gap-3 sm:grid-cols-2"><div class="rounded-lg bg-stone-100 p-3"><p class="text-[9px] font-bold text-stone-400">修改前</p><p class="mt-1 text-[10px] leading-5 text-stone-600">${escapeHtml(diff.before.body || "")}</p></div><div class="rounded-lg border border-[#9e2f24]/15 bg-white p-3"><p class="text-[9px] font-bold text-[#9e2f24]">修改后</p><p class="mt-1 text-[10px] leading-5 text-stone-700">${escapeHtml(diff.after.body || "")}</p></div></div>` : ""}</details>`;
+      };
+      const renderImpactSuggestions = (draft) => {
+        const impact = revisionImpacts.get(draft.id);
+        const candidates = impact && impact.candidates || [];
+        if (!candidates.length) return "";
+        const freshnessLabels = { new_source: "新确认来源", updated_material: "原资料有新补充", updated_relation: "关系说明已更新" };
+        return `<details class="mt-4 rounded-xl border border-[#496a61]/25 bg-[#496a61]/5 p-4"><summary class="cursor-pointer text-xs font-bold text-[#35534c]">发现 ${candidates.length} 份可能影响故事的新材料</summary><p class="mt-2 text-[10px] leading-relaxed text-stone-500">以下建议由确定性规则生成，没有调用 AI，也没有修改正文。请先看理由，再决定是否创建局部修订。</p><div class="mt-3 space-y-2">${candidates.map((candidate) => {
+          const hasSuggestion = candidate.suggestedChapterIndex != null;
+          const revisionReason = `核对新材料：${candidate.submissionTitle}`;
+          return `<article class="rounded-xl border border-stone-200 bg-white p-3"><div class="flex flex-wrap items-start justify-between gap-2"><div class="min-w-0 flex-1"><div class="flex flex-wrap gap-2"><span class="rounded-full bg-[#496a61]/10 px-2 py-1 text-[9px] font-bold text-[#35534c]">${escapeHtml(freshnessLabels[candidate.freshness] || "新材料")}</span><span class="rounded-full bg-stone-100 px-2 py-1 text-[9px] text-stone-500">${escapeHtml(candidate.relationLabel || "故事线索")}</span></div><h4 class="mt-2 text-xs font-bold text-stone-800">${escapeHtml(candidate.submissionTitle)}</h4><p class="mt-1 text-[10px] leading-5 text-stone-500">${escapeHtml(candidate.evidenceSummary || "这份资料已通过审核并关联到当前资源。")}</p><p class="mt-2 text-[10px] font-medium leading-5 ${hasSuggestion ? "text-[#7d2b23]" : "text-amber-700"}">${escapeHtml(candidate.reason)}</p></div>${hasSuggestion ? `<form data-story-impact-form data-story-id="${escapeHtml(draft.id)}" class="shrink-0"><input type="hidden" name="targetChapterIndex" value="${Number(candidate.suggestedChapterIndex)}"><input type="hidden" name="revisionReason" value="${escapeHtml(revisionReason)}"><button type="submit" class="rounded-lg border border-[#9e2f24]/20 bg-[#9e2f24]/5 px-3 py-2 text-[10px] font-bold text-[#7d2b23]">修订第 ${Number(candidate.suggestedChapterIndex) + 1} 章</button></form>` : `<span class="shrink-0 text-[9px] text-stone-400">请人工选择章节</span>`}</div></article>`;
+        }).join("")}</div></details>`;
+      };
+      const resourceOptions = resources.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)} · ${Number(item.confirmedSourceCount || 0)} 份来源${Number(item.approvedSupplementCount || 0) ? ` + ${Number(item.approvedSupplementCount || 0)} 份补充` : ''}${item.hasNewMaterial ? ' · 有新补充待更新' : item.readiness && !item.readiness.ready ? ' · 建议先补充' : ' · 可进行质量检查'}</option>`).join("");
+      const cards = drafts.length ? drafts.map((draft) => {
+        const isDraft = draft.status === "draft";
+        const isPublished = draft.status === "published";
+        const isRevision = isDraft && draft.revisionMode === "section_patch";
+        const revisionTarget = Number(draft.targetChapterIndex);
+        const quality = draft.qualityAssessment || null;
+        const qualityLabels = { blocked: "需要修正", preview: "建议修改", reviewable: "可以校读", strong: "资料较完整" };
+        const qualityIssues = quality ? [...(quality.hardFailures || []), ...(quality.warnings || [])].slice(0, 3) : [];
+        const qualitySlip = quality ? `
+          <aside class="mt-4 border-l-2 ${quality.publicationEligible ? "border-[#496a61] bg-[#496a61]/5" : "border-[#9e2f24] bg-[#9e2f24]/5"} px-4 py-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <strong class="text-xs ${quality.publicationEligible ? "text-[#35534c]" : "text-[#7d2b23]"}">校读签 · ${escapeHtml(qualityLabels[quality.grade] || "等待检查")}</strong>
+              <span class="text-[10px] text-stone-500">${Number(quality.score || 0)} / 100 · ${escapeHtml(quality.version || "story-quality-v2")}</span>
+            </div>
+            <p class="mt-1 text-[10px] leading-relaxed text-stone-600">${quality.publicationEligible ? "来源与结构已达到发布审核线，仍需人工核对事实。" : "先修改下面的问题；如果确有编辑依据，可填写人工判断说明。"}</p>
+            ${qualityIssues.length ? `<ul class="mt-2 space-y-1 text-[10px] leading-relaxed text-stone-600">${qualityIssues.map((issue) => `<li>• ${escapeHtml(issue)}</li>`).join("")}</ul>` : ""}
+          </aside>` : `
+          <aside class="mt-4 border-l-2 border-stone-300 bg-stone-50 px-4 py-3 text-[10px] leading-relaxed text-stone-500">旧草稿暂无质量记录；发布时会按最新规则检查。</aside>`;
+        const chapterEditors = (draft.chapters || []).map((chapter, index) => {
+          const locked = isRevision && index !== revisionTarget;
+          const availableSources = isRevision && !locked
+            ? [...claimSources.values()].filter((source) => source.resourceId === draft.resourceId)
+            : [];
+          const sourceEditor = availableSources.length ? `<div data-story-chapter-source-options class="mt-3 grid gap-2 sm:grid-cols-2">${availableSources.map((source) => `<label class="flex items-start gap-2 rounded-lg border border-stone-200 bg-white p-2 text-[10px]"><input type="checkbox" value="${escapeHtml(source.id)}" ${(chapter.sourceLinkIds || []).includes(source.id) ? "checked" : ""} class="mt-0.5"><span><strong class="block text-stone-700">${escapeHtml(source.label)}</strong><span class="block leading-4 text-stone-400">${escapeHtml(source.evidenceSummary || "已确认资料")}</span></span></label>`).join("")}</div>` : `<input data-story-chapter-sources type="hidden" value="${escapeHtml((chapter.sourceLinkIds || []).join(','))}">`;
+          return `<section data-story-chapter class="rounded-xl border ${locked ? "border-stone-200 bg-stone-100/70" : isRevision ? "border-[#9e2f24]/25 bg-[#fffaf1]" : "border-stone-200 bg-stone-50"} p-3">
+            <div class="mb-2 flex items-center justify-between gap-2"><span class="text-[9px] font-bold ${locked ? "text-stone-400" : "text-[#9e2f24]"}">${locked ? "本次保持不变" : isRevision ? "本次修订章节" : `第 ${index + 1} 章`}</span></div>
+            ${isRevision && !locked ? `<details class="mb-3 rounded-lg bg-stone-100 p-3"><summary class="cursor-pointer text-[10px] font-bold text-stone-500">查看修改前正文</summary><p class="mt-2 whitespace-pre-wrap text-[10px] leading-5 text-stone-500">${escapeHtml(chapter.body)}</p></details>` : ""}
+            <input data-story-chapter-title value="${escapeHtml(chapter.title)}" ${locked ? "readonly" : ""} class="w-full rounded-lg border border-stone-200 ${locked ? "bg-stone-100 text-stone-500" : "bg-white"} px-3 py-2 text-xs font-bold outline-none focus:border-[#123c3a]" aria-label="第 ${index + 1} 章标题">
+            <textarea data-story-chapter-body rows="5" ${locked ? "readonly" : ""} class="mt-2 w-full rounded-lg border border-stone-200 ${locked ? "bg-stone-100 text-stone-500" : "bg-white"} p-3 text-xs leading-relaxed outline-none focus:border-[#123c3a]" aria-label="第 ${index + 1} 章正文">${escapeHtml(chapter.body)}</textarea>
+            ${sourceEditor}
+            <p class="mt-2 text-[9px] text-stone-400">${availableSources.length ? "勾选本章实际使用的已确认资料。" : `资料来源：${escapeHtml((chapter.sourceLinkIds || []).join('、'))}`}</p>
+          </section>`;
+        }).join("");
+        return `
+          <article data-story-draft-id="${escapeHtml(draft.id)}" class="rounded-2xl border ${isDraft ? "border-amber-200" : isPublished ? "border-emerald-200" : "border-stone-200"} bg-white p-5 shadow-sm">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div><p class="text-[10px] font-bold uppercase tracking-[0.18em] ${isDraft ? "text-amber-700" : "text-emerald-700"}">${escapeHtml(draft.status)}</p><h3 class="mt-1 font-bold text-stone-900">${escapeHtml(draft.resourceTitle || draft.resourceId)}</h3></div>
+              <span class="rounded-full bg-stone-50 px-3 py-1 text-[10px] text-stone-500">${Number((draft.sourceLinkIds || []).length)} 份来源</span>
+            </div>
+            ${isDraft ? `
+              ${isRevision ? `<div class="mt-4 rounded-xl border-l-4 border-[#9e2f24] bg-[#9e2f24]/5 p-3"><p class="text-xs font-bold text-[#7d2b23]">局部修订 · 从第 ${Number(draft.previousVersion || 1)} 版创建</p><p class="mt-1 text-[10px] leading-relaxed text-stone-500">原因：${escapeHtml(draft.revisionReason || "补充新资料")}。只有第 ${revisionTarget + 1} 章可以修改。</p></div>` : ""}
+              <label class="mt-4 block text-[10px] font-bold text-stone-600">故事标题<input data-story-title value="${escapeHtml(draft.title)}" ${isRevision ? "readonly" : ""} class="mt-1 w-full rounded-lg border border-stone-200 px-3 py-2 text-sm font-bold outline-none focus:border-[#123c3a] ${isRevision ? "bg-stone-100 text-stone-500" : ""}"></label>
+              <label class="mt-3 block text-[10px] font-bold text-stone-600">导语<textarea data-story-introduction rows="3" ${isRevision ? "readonly" : ""} class="mt-1 w-full rounded-lg border border-stone-200 p-3 text-xs leading-relaxed outline-none focus:border-[#123c3a] ${isRevision ? "bg-stone-100 text-stone-500" : ""}">${escapeHtml(draft.introduction)}</textarea></label>
+              <div class="mt-3 grid gap-3">${chapterEditors}</div>
+              <label class="mt-3 block text-[10px] font-bold text-stone-600">结语<textarea data-story-closing rows="3" ${isRevision ? "readonly" : ""} class="mt-1 w-full rounded-lg border border-stone-200 p-3 text-xs leading-relaxed outline-none focus:border-[#123c3a] ${isRevision ? "bg-stone-100 text-stone-500" : ""}">${escapeHtml(draft.closing)}</textarea></label>
+              ${isRevision ? `<label class="mt-3 block text-[10px] font-bold text-stone-600">给读者看的修订说明<input data-story-revision-summary value="${escapeHtml(draft.revisionSummary || "")}" class="mt-1 w-full rounded-lg border border-[#9e2f24]/25 bg-white px-3 py-2 text-xs outline-none focus:border-[#9e2f24]" placeholder="例如：根据新发现的修缮记录，补充了建筑近现代变化。"></label>` : ""}
+              ${qualitySlip}
+              ${quality && !quality.publicationEligible ? `<label class="mt-3 block text-[10px] font-bold text-stone-600">人工判断说明（仅在修改后仍低于建议线时需要）<textarea data-story-quality-override rows="2" class="mt-1 w-full rounded-lg border border-stone-200 p-3 text-xs leading-relaxed outline-none focus:border-[#9e2f24]" placeholder="说明为什么现有证据仍足以发布，至少 8 个字"></textarea></label>` : ""}
+              <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-stone-100 pt-4"><p class="text-[10px] text-stone-500">发布前请逐章核对文字和来源；AI 草稿不会自动公开。</p><button type="button" data-story-draft-publish class="rounded-xl bg-emerald-700 px-5 py-3 text-xs font-bold text-white">审核无误并发布</button></div>
+            ` : `
+              <h4 class="mt-4 text-lg font-bold text-stone-900">${escapeHtml(draft.title)}</h4><p class="mt-2 text-xs leading-relaxed text-stone-600">${escapeHtml(draft.introduction)}</p>
+              ${qualitySlip}
+              ${isPublished ? renderPublishedRevision(draft) : ""}
+              ${isPublished ? renderImpactSuggestions(draft) : ""}
+              ${isPublished ? renderGapTaskTools(draft) : ""}
+              ${isPublished ? renderClaimTools(draft) : ""}
+              ${isPublished ? renderRevisionStarter(draft) : ""}
+              ${isPublished ? `<div class="mt-4 flex gap-2"><input data-story-archive-reason class="min-w-0 flex-1 rounded-lg border border-stone-200 px-3 py-2 text-xs" placeholder="归档原因"><button type="button" data-story-draft-archive class="rounded-lg border border-red-200 px-4 py-2 text-xs font-bold text-red-700">归档故事</button></div>` : '<p class="mt-3 text-[10px] text-stone-400">这是历史版本，仅保留用于追溯。</p>'}
+            `}
+          </article>`;
+      }).join("") : '<div class="rounded-2xl border border-dashed border-stone-300 bg-white p-6 text-sm text-stone-500">还没有故事草稿。先选择一个已经拥有确认链迹的资源生成草稿。</div>';
+      list.innerHTML = `
+        <section class="rounded-2xl border border-[#d9ad52]/40 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm">
+          <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-[#9b733b]">Sourced Story</p><h3 class="mt-1 text-lg font-bold text-stone-900">从已确认链迹生成故事草稿</h3>
+          <p class="mt-1 max-w-3xl text-xs leading-relaxed text-stone-500">AI 只能使用正式链迹中的已审核资料，每个章节必须保留来源编号。生成后仍需管理员编辑和发布。</p>
+          <form id="story-draft-generate-form" class="mt-4 flex flex-col gap-3 sm:flex-row">
+            <select name="resourceId" ${resources.length ? "" : "disabled"} class="min-w-0 flex-1 rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm outline-none focus:border-[#123c3a]">${resourceOptions || '<option>当前没有可生成故事的资源</option>'}</select>
+            <button type="submit" ${resources.length ? "" : "disabled"} class="rounded-xl bg-[#123c3a] px-5 py-3 text-xs font-bold text-[#d9ad52] disabled:opacity-40">生成带来源草稿</button>
+          </form>
+          <div class="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-[10px] leading-relaxed text-emerald-800">生成前会先检查资料数量、现场描述和关系依据。质量不足时系统只会告诉你还缺什么，不会调用模型，也不会生成空泛故事。</div>
+        </section>${cards}`;
+    }
+
+    async function loadStoryDrafts() {
+      setActiveView("story-drafts", "故事草稿");
+      viewCount.textContent = "正在读取";
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在读取已确认链迹和故事版本，不会调用模型...";
+      list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在准备故事工作台...</div>';
+      try {
+        const [result, claimWorkspace, impactWorkspace, gapTaskWorkspace] = await Promise.all([
+          callAiWorker({ action: "getStoryDraftWorkspace" }),
+          callAdmin({ action: "getStoryClaimWorkspace" }).catch(() => ({ claims: [], count: 0 })),
+          callAdmin({ action: "getStoryRevisionImpactWorkspace" }).catch(() => ({ stories: [], counts: {} })),
+          callAdmin({ action: "getStoryGapTaskWorkspace" }).catch(() => ({ tasks: [], count: 0 }))
+        ]);
+        result.claimWorkspace = claimWorkspace;
+        result.impactWorkspace = impactWorkspace;
+        result.gapTaskWorkspace = gapTaskWorkspace;
+        renderStoryDraftWorkspace(result);
+        viewCount.textContent = `${Number(result.counts && result.counts.drafts || 0)} 份草稿`;
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "故事工作台已同步，本次没有调用模型。";
+      } catch (error) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function generateStoryDraft(event) {
+      event.preventDefault();
+      const button = event.target.querySelector('button[type="submit"]');
+      const resourceId = new FormData(event.target).get("resourceId");
+      button.disabled = true;
+      button.textContent = "AI 正在编排...";
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在使用已确认链迹生成草稿，不会自动发布。";
+      try {
+        const result = await callAiWorker({ action: "generateStoryDraft", resourceId });
+        await loadStoryDrafts();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = result.cached ? "已读取相同来源版本的缓存草稿。" : "带来源故事草稿已生成，请逐章核对后再发布。";
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "生成带来源草稿";
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function publishStoryDraft(card) {
+      const chapters = [...card.querySelectorAll("[data-story-chapter]")].map((chapter) => ({
+        title: chapter.querySelector("[data-story-chapter-title]").value.trim(),
+        body: chapter.querySelector("[data-story-chapter-body]").value.trim(),
+        sourceLinkIds: chapter.querySelector("[data-story-chapter-source-options]")
+          ? [...chapter.querySelectorAll("[data-story-chapter-source-options] input:checked")].map((input) => input.value)
+          : chapter.querySelector("[data-story-chapter-sources]").value.split(',').map((id) => id.trim()).filter(Boolean)
+      }));
+      const button = card.querySelector("[data-story-draft-publish]");
+      button.disabled = true;
+      try {
+        await callAdmin({ action: "publishStoryDraft", draftId: card.dataset.storyDraftId, title: card.querySelector("[data-story-title]").value.trim(), introduction: card.querySelector("[data-story-introduction]").value.trim(), chapters, closing: card.querySelector("[data-story-closing]").value.trim(), qualityOverrideReason: card.querySelector("[data-story-quality-override]")?.value.trim() || "", revisionSummary: card.querySelector("[data-story-revision-summary]")?.value.trim() || "" });
+        await loadStoryDrafts();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "故事已发布，用户现在可以在该点位的“链迹 → 故事讲述”中查看。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function archiveStoryDraft(card) {
+      const button = card.querySelector("[data-story-draft-archive]");
+      button.disabled = true;
+      try {
+        await callAdmin({ action: "archiveStoryChain", storyId: card.dataset.storyDraftId, archiveReason: card.querySelector("[data-story-archive-reason]").value.trim() });
+        await loadStoryDrafts();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "故事已归档并停止公开，原始投稿和链迹关系均保留。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function createStoryRevision(event) {
+      event.preventDefault();
+      const form = event.target;
+      const button = form.querySelector('button[type="submit"]');
+      button.disabled = true;
+      try {
+        const result = await callAdmin({ action: "createStoryRevisionDraft", storyId: form.dataset.storyId, targetChapterIndex: Number(form.elements.targetChapterIndex.value), revisionReason: form.elements.revisionReason.value.trim() });
+        await loadStoryDrafts();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = result.cached ? "已有一份局部修订草稿，已为你打开工作台。" : "局部修订草稿已创建，未选章节已锁定。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function publishStoryGapTask(event) {
+      event.preventDefault();
+      const form = event.target;
+      const button = form.querySelector('button[type="submit"]');
+      const data = new FormData(form);
+      button.disabled = true;
+      try {
+        await callAdmin({ action: "publishStoryGapTask", storyId: form.dataset.storyId, title: data.get("title"), description: data.get("description"), chapterIndex: data.get("chapterIndex"), requestedAssetType: data.get("requestedAssetType"), rewardPoints: Number(data.get("rewardPoints")) });
+        await loadStoryDrafts();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "定向资料征集已发布，会显示在对应故事下方。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function updateStoryGapTask(card, action) {
+      const selector = action === "archiveStoryGapTask" ? "[data-story-gap-task-archive]" : action === "awardStoryGapTask" ? "[data-story-gap-task-award]" : "[data-story-gap-task-fulfill]";
+      const button = card.querySelector(selector);
+      button.disabled = true;
+      try {
+        await callAdmin({ action, taskId: card.dataset.storyGapTaskId, submissionId: card.querySelector("[data-story-gap-task-submission]")?.value.trim() || "" });
+        await loadStoryDrafts();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = action === "archiveStoryGapTask" ? "征集任务已停止公开。" : action === "awardStoryGapTask" ? "额外贡献积分已发放，并已通知用户。" : "资料已确认采用；用户已收到通知，额外积分等待再次确认。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function saveStoryClaim(event) {
+      event.preventDefault();
+      const form = event.target;
+      const button = form.querySelector('button[type="submit"]');
+      const sourceLinkIds = [...form.querySelectorAll('input[name="sourceLinkIds"]:checked')].map((input) => input.value);
+      button.disabled = true;
+      try {
+        await callAdmin({
+          action: "saveStoryClaim",
+          storyId: form.dataset.storyId,
+          chapterIndex: Number(form.dataset.chapterIndex),
+          claimText: form.elements.claimText.value.trim(),
+          status: form.elements.status.value,
+          sourceLinkIds
+        });
+        await loadStoryDrafts();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "句级依据已保存；只有“已有依据”的内容会显示给用户。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function retireStoryClaim(card, button) {
+      button.disabled = true;
+      try {
+        await callAdmin({ action: "retireStoryClaim", claimId: card.dataset.storyClaimId, reason: card.querySelector("[data-story-claim-retire-reason]").value.trim() });
+        await loadStoryDrafts();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "事实依据已停用，原故事和投稿仍然保留。";
+      } catch (error) {
+        button.disabled = false;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    function renderAiStatus(result, workspace = {}) {
+      const config = result.config || {};
+      const usage = result.todayUsage || {};
+      const test = result.syntheticTest || null;
+      const analysis = test && test.analysis;
+      const testJob = test && test.job;
+      const ready = config.enabled && config.apiKeyConfigured;
+      const candidates = analysis && analysis.output && Array.isArray(analysis.output.candidateLinks)
+        ? analysis.output.candidateLinks
+        : [];
+      const realSubmissions = workspace.submissions || [];
+      const realCandidates = workspace.candidates || [];
+      const pendingCandidates = realCandidates.filter((item) => item.status === "pending_admin");
+      const consentedSubmissionCards = realSubmissions.length ? realSubmissions.map((item) => `
+        <article class="rounded-xl border border-stone-200 bg-stone-50 p-3">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <h4 class="text-sm font-bold text-stone-800">${escapeHtml(item.title)}</h4>
+              <p class="mt-1 text-[10px] leading-relaxed text-stone-500">${escapeHtml(item.regionName)} · ${escapeHtml(item.assetType)} · 状态 ${escapeHtml(item.aiAnalysisStatus || "eligible")}</p>
+              <p class="mt-2 line-clamp-2 text-xs leading-relaxed text-stone-600">${escapeHtml(item.description || "未填写描述")}</p>
+            </div>
+            <button type="button" data-ai-analyze-submission="${escapeHtml(item.id)}" ${ready ? "" : "disabled"} class="rounded-lg bg-[#123c3a] px-4 py-2 text-xs font-bold text-[#d9ad52] disabled:cursor-not-allowed disabled:opacity-40">${item.analysisId ? "读取分析结果" : "生成候选链迹"}</button>
+          </div>
+        </article>
+      `).join("") : '<div class="rounded-xl border border-dashed border-stone-300 bg-stone-50 p-5 text-xs leading-relaxed text-stone-500">当前没有“审核通过且用户已授权 AI 分析”的投稿。旧投稿缺少授权字段时会被安全地视为未授权。</div>';
+      const realCandidateCards = pendingCandidates.length ? pendingCandidates.map((item) => `
+        <article data-ai-candidate-id="${escapeHtml(item.id)}" data-submission-id="${escapeHtml(item.submissionId)}" data-resource-id="${escapeHtml(item.resourceId)}" data-relation-type="${escapeHtml(item.relationType)}" class="rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-bold uppercase tracking-[0.16em] text-amber-700">等待管理员确认</p>
+              <h4 class="mt-1 text-sm font-bold text-stone-900">${escapeHtml(item.submissionTitle)} <span class="text-stone-300">→</span> ${escapeHtml(item.resourceTitle)}</h4>
+              <p class="mt-1 text-[10px] text-stone-500">${escapeHtml(storyRelationLabels[item.relationType] || item.relationType)} · AI 置信度 ${Math.round(Number(item.confidence || 0) * 100)}%</p>
+            </div>
+          </div>
+          <p class="mt-3 text-xs leading-relaxed text-stone-600">${escapeHtml(item.reason)}</p>
+          <label class="mt-3 block text-[10px] font-bold text-stone-600">公开关系说明（确认前可修改）
+            <textarea data-ai-candidate-evidence rows="3" class="mt-1 w-full rounded-lg border border-amber-200 bg-white p-3 text-xs font-normal outline-none focus:border-[#123c3a]">${escapeHtml(item.evidence)}</textarea>
+          </label>
+          <div class="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+            <input data-ai-candidate-note class="rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs outline-none" placeholder="驳回时填写至少 4 个字的原因">
+            <button type="button" data-ai-candidate-reject class="rounded-lg border border-red-200 bg-white px-4 py-2 text-xs font-bold text-red-700">驳回候选</button>
+            <button type="button" data-ai-candidate-confirm class="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white">确认并发布链迹</button>
+          </div>
+        </article>
+      `).join("") : '<div class="rounded-xl border border-dashed border-stone-300 bg-stone-50 p-5 text-xs text-stone-500">当前没有等待管理员处理的 AI 候选关系。</div>';
+      list.innerHTML = `
+        <section class="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-[#9b733b]">AI Foundation</p>
+              <h3 class="mt-1 text-lg font-bold text-stone-900">模型接口与安全开关</h3>
+              <p class="mt-1 max-w-2xl text-xs leading-relaxed text-stone-500">这里不会读取真实投稿。首个测试只发送一条写在云函数里的虚构黄鹤楼题刻文本，并验证模型能否返回合规 JSON。</p>
+            </div>
+            <span class="rounded-full px-3 py-1.5 text-[10px] font-bold ${ready ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}">${ready ? "可以进行虚构数据测试" : "尚未启用模型调用"}</span>
+          </div>
+          <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div class="rounded-xl bg-stone-50 p-3"><p class="text-[9px] text-stone-400">总开关</p><p class="mt-1 text-sm font-bold ${config.enabled ? "text-emerald-700" : "text-stone-600"}">${config.enabled ? "AI_ENABLED=true" : "AI_ENABLED=false"}</p></div>
+            <div class="rounded-xl bg-stone-50 p-3"><p class="text-[9px] text-stone-400">API Key</p><p class="mt-1 text-sm font-bold ${config.apiKeyConfigured ? "text-emerald-700" : "text-stone-600"}">${config.apiKeyConfigured ? "已安全配置" : "尚未配置"}</p></div>
+            <div class="rounded-xl bg-stone-50 p-3"><p class="text-[9px] text-stone-400">模型</p><p class="mt-1 break-all text-sm font-bold text-stone-700">${escapeHtml(config.provider || "-")} / ${escapeHtml(config.textModel || "-")}</p></div>
+            <div class="rounded-xl bg-stone-50 p-3"><p class="text-[9px] text-stone-400">接口域名</p><p class="mt-1 break-all text-sm font-bold text-stone-700">${escapeHtml(config.endpointHost || "-")}</p></div>
+          </div>
+          <div class="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs leading-relaxed text-blue-800">
+            今日用量：尝试 ${Number(usage.callsAttempted || 0)} 次，完成 ${Number(usage.callsCompleted || 0)} 次，共 ${Number(usage.totalTokens || 0)} Tokens。限制：${Number(config.dailyCallLimit || 0)} 次 / ${Number(config.dailyTokenLimit || 0)} Tokens。
+          </div>
+          <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-stone-100 pt-4">
+            <p class="text-[10px] leading-relaxed text-stone-500">相同模型和提示词只会完成一次测试；重复点击读取缓存，不会再次调用模型。</p>
+            <button type="button" data-ai-synthetic-test ${ready ? "" : "disabled"} class="rounded-xl bg-[#123c3a] px-5 py-3 text-xs font-bold text-[#d9ad52] disabled:cursor-not-allowed disabled:opacity-40">${analysis ? "读取已完成测试" : "运行一次虚构数据测试"}</button>
+          </div>
+        </section>
+        <section class="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-[#9b733b]">真实投稿 · 人工把关</p>
+              <h3 class="mt-1 text-lg font-bold text-stone-900">从授权投稿生成候选链迹</h3>
+              <p class="mt-1 max-w-3xl text-xs leading-relaxed text-stone-500">管理员手动触发后，只把投稿的公开文字和可选资源清单发给模型。模型不会读取账号、联系方式、原始文件或精确坐标，也不会直接发布。</p>
+            </div>
+            <div class="rounded-xl bg-stone-50 px-3 py-2 text-center text-xs"><strong class="block text-base text-[#123c3a]">${realSubmissions.length}</strong>已授权投稿</div>
+          </div>
+          <div class="mt-4 grid gap-3">${consentedSubmissionCards}</div>
+        </section>
+        <section class="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div><p class="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">AI Candidates</p><h3 class="mt-1 text-lg font-bold text-stone-900">候选关系审核</h3></div>
+            <span class="rounded-full bg-amber-50 px-3 py-1 text-[10px] font-bold text-amber-700">${pendingCandidates.length} 条待确认</span>
+          </div>
+          <p class="mt-2 text-xs leading-relaxed text-stone-500">只有点击“确认并发布链迹”才会进入正式 story_evidence_links；确认和驳回都留下管理员日志。</p>
+          <div class="mt-4 grid gap-3">${realCandidateCards}</div>
+        </section>
+        ${!ready ? `
+          <section class="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+            <h3 class="font-bold">下一步需要在 storyWorker 云函数保存环境变量</h3>
+            <pre class="mt-3 overflow-x-auto rounded-xl bg-white p-3 text-[10px] leading-relaxed text-stone-700">AI_ENABLED=true
+AI_PROVIDER=tokenhub
+AI_BASE_URL=https://tokenhub.tencentmaas.com/v1
+AI_TEXT_MODEL=hy3
+TOKENHUB_API_KEY=你在 TokenHub 创建的独立 API Key</pre>
+            <p class="mt-2 text-[10px]">密钥不要填写到本页面、GitHub 或聊天中；这里只显示“是否已配置”。</p>
+          </section>` : ''}
+        ${testJob ? `
+          <section class="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+            <div class="flex flex-wrap items-center justify-between gap-2"><h3 class="font-bold text-stone-900">虚构数据测试结果</h3><span class="rounded-full px-2 py-1 text-[10px] font-bold ${testJob.status === "completed" ? "bg-emerald-50 text-emerald-700" : testJob.status === "failed" ? "bg-red-50 text-red-700" : "bg-blue-50 text-blue-700"}">${escapeHtml(testJob.status)}</span></div>
+            <p class="mt-2 text-[10px] text-stone-500">${escapeHtml(testJob.provider)} / ${escapeHtml(testJob.model)} · 提示词 ${escapeHtml(testJob.promptVersion)} · 尝试 ${Number(testJob.attempts || 0)}/${Number(testJob.maxAttempts || 0)}</p>
+            ${testJob.lastError ? `<p class="mt-3 rounded-xl bg-red-50 p-3 text-xs text-red-700">${escapeHtml(testJob.lastError.code)}：${escapeHtml(testJob.lastError.message)}</p>` : ''}
+            ${analysis ? `
+              <p class="mt-4 rounded-xl bg-stone-50 p-3 text-sm leading-relaxed text-stone-700">${escapeHtml(analysis.output && analysis.output.summary || "")}</p>
+              <div class="mt-3 grid gap-2">${candidates.map((item) => `<div class="rounded-xl border border-emerald-100 bg-emerald-50 p-3"><div class="flex items-center justify-between gap-2"><strong class="text-xs text-emerald-900">${escapeHtml(item.resourceId)} · ${escapeHtml(item.relationType)}</strong><span class="text-[10px] font-bold text-emerald-700">${Math.round(Number(item.confidence || 0) * 100)}%</span></div><p class="mt-1 text-[10px] leading-relaxed text-emerald-800">${escapeHtml(item.reason)}</p></div>`).join("") || '<p class="text-xs text-stone-500">模型没有提出候选关系，这也是合法结果。</p>'}</div>
+              <p class="mt-3 text-[10px] text-stone-400">本次用量：${Number(analysis.usage && analysis.usage.totalTokens || 0)} Tokens。结果只保存在 ai_analyses，不会进入正式链迹。</p>` : ''}
+          </section>` : ''}
+      `;
+    }
+
+    async function loadAiStatus() {
+      setActiveView("ai-status", "AI 接口");
+      viewCount.textContent = "安全状态";
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在读取 AI 云函数状态，不会调用模型...";
+      list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在检查 storyWorker...</div>';
+      try {
+        const [result, workspace] = await Promise.all([
+          callAiWorker({ action: "status" }),
+          callAiWorker({ action: "getSubmissionWorkspace" })
+        ]);
+        renderAiStatus(result, workspace);
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "状态读取完成，本次没有产生模型费用。";
+      } catch (error) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+        list.innerHTML = '<div class="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm leading-relaxed text-amber-800"><strong>storyWorker 尚未初始化。</strong><br>现有业务不受影响。完成首次云函数部署后，这里会显示模型开关、密钥配置状态和每日用量。</div>';
+      }
+    }
+
+    async function runSyntheticAiTest(button) {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "正在验证结构化输出...";
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在发送一条虚构测试文本；不会读取用户投稿。";
+      try {
+        const result = await callAiWorker({ action: "runSyntheticTest" });
+        await loadAiStatus();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = result.cached ? "测试结果已从缓存读取，没有重复调用模型。" : "AI 接口测试通过，结构化结果已安全保存。";
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = original;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function analyzeConsentedSubmission(button) {
+      const submissionId = button.dataset.aiAnalyzeSubmission;
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "AI 正在分析...";
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在分析一条已审核且已授权的投稿；结果只会进入候选区。";
+      try {
+        const result = await callAiWorker({ action: "analyzeSubmission", submissionId });
+        await loadAiStatus();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = result.cached
+          ? "已读取该版本投稿的缓存结果，没有重复调用模型。"
+          : "AI 分析完成。请在候选关系审核区逐条确认或驳回。";
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = original;
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function confirmAiCandidate(card) {
+      const evidenceSummary = card.querySelector("[data-ai-candidate-evidence]").value.trim();
+      const buttons = card.querySelectorAll("button");
+      buttons.forEach((button) => { button.disabled = true; });
+      try {
+        await callAdmin({
+          action: "saveStoryEvidenceLink",
+          candidateId: card.dataset.aiCandidateId,
+          submissionId: card.dataset.submissionId,
+          resourceId: card.dataset.resourceId,
+          relationType: card.dataset.relationType,
+          evidenceSummary
+        });
+        await loadAiStatus();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "AI 候选已由管理员确认，并作为正式链迹发布。";
+      } catch (error) {
+        buttons.forEach((button) => { button.disabled = false; });
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function rejectAiCandidate(card) {
+      const decisionNote = card.querySelector("[data-ai-candidate-note]").value.trim();
+      const buttons = card.querySelectorAll("button");
+      buttons.forEach((button) => { button.disabled = true; });
+      try {
+        await callAdmin({
+          action: "rejectAiStoryCandidate",
+          candidateId: card.dataset.aiCandidateId,
+          decisionNote
+        });
+        await loadAiStatus();
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = "AI 候选已驳回并留下审核记录，没有发布任何链迹。";
+      } catch (error) {
+        buttons.forEach((button) => { button.disabled = false; });
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function loadResourceSeedPreview() {
+      setActiveView("resource-preview", "资源迁移预览");
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在进行只读比较...";
+      viewCount.textContent = "只读";
+      list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在读取资源种子和云端状态…</div>';
+      try {
+        const result = await callAdmin({ action: "previewResourceSeed" });
+        renderResourceSeedPreview(result);
+        viewCount.textContent = `${Number(result.total || 0)} 项资源`;
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = `预览完成：待新增 ${Number(result.missing || 0)}，已存在 ${Number(result.existing || 0)}，差异 ${Number(result.differing || 0)}。没有写入业务数据。`;
+      } catch (error) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+        list.innerHTML = '<div class="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">资源迁移预览暂不可用，未执行任何导入。</div>';
+      }
+    }
+
+    function materialAnalysisPanel(analysis) {
+      if (!analysis) return '<p class="mt-3 text-xs text-stone-500">尚未创建识别任务。</p>';
+      const statusLabel = {
+        needs_review: "等待校对",
+        approved: analysis.simulated ? "已确认（模拟）" : "已确认",
+        rejected: analysis.simulated ? "已退回（模拟）" : "已退回"
+      }[analysis.status] || analysis.status || "未知状态";
+      if (analysis.status === "needs_review") {
+        return `
+          <div data-material-analysis-id="${escapeHtml(analysis.id)}" data-material-simulated="${analysis.simulated ? "true" : "false"}" class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <strong class="text-xs text-amber-800">${escapeHtml(statusLabel)}</strong>
+              <span class="text-[10px] text-amber-700">${escapeHtml(analysis.provider)} · ${escapeHtml(analysis.pipelineVersion)}</span>
+            </div>
+            <p class="mt-2 text-[10px] leading-relaxed text-amber-800">${analysis.simulated
+              ? "当前是流程模拟结果，不是图片真实文字。即使确认，也不会进入正式链迹故事。"
+              : `这是腾讯云 OCR 返回并自动脱敏后的文字。请对照原图校对；确认后只会成为可用材料，不会自动发布。${analysis.privacy && analysis.privacy.redacted ? " 已检测并隐藏敏感字段。" : ""}`}</p>
+            <label class="mt-3 block text-xs font-bold text-stone-700">校对后的文字
+              <textarea data-material-reviewed-text rows="5" class="mt-1 w-full rounded-xl border border-amber-200 bg-white p-3 text-xs leading-relaxed outline-none focus:border-[#123c3a]">${escapeHtml(analysis.reviewedText || analysis.extractedText || "")}</textarea>
+            </label>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button type="button" data-material-review="approved" class="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white">${analysis.simulated ? "确认模拟结果" : "确认校对结果"}</button>
+              <button type="button" data-material-review="rejected" class="rounded-lg bg-stone-600 px-4 py-2 text-xs font-bold text-white">${analysis.simulated ? "退回模拟结果" : "退回识别结果"}</button>
+            </div>
+          </div>`;
+      }
+      return `
+        <div class="mt-4 rounded-xl border border-stone-200 bg-stone-50 p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <strong class="text-xs ${analysis.status === "approved" ? "text-emerald-700" : "text-stone-600"}">${escapeHtml(statusLabel)}</strong>
+            <span class="text-[10px] text-stone-400">${analysis.usableForStory ? "已具备故事材料资格" : "不可用于故事"}</span>
+          </div>
+          ${analysis.reviewedText ? `<p class="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-stone-700">${escapeHtml(analysis.reviewedText)}</p>` : ""}
+        </div>`;
+    }
+
+    function renderMaterialWorkspace(result) {
+      const items = result.items || [];
+      const synthetic = result.synthetic || {};
+      const realReady = result.realOcrReady === true;
+      const realCards = items.length ? items.map((item) => `
+        <article class="grid gap-4 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm md:grid-cols-[220px_1fr]">
+          <div class="overflow-hidden rounded-xl bg-stone-100">
+            ${item.fileUrl
+              ? `<img src="${escapeHtml(item.fileUrl)}" alt="待识别图片" class="h-48 w-full object-cover">`
+              : '<div class="flex h-48 items-center justify-center px-4 text-center text-xs text-stone-400">图片预览暂不可用</div>'}
+          </div>
+          <div>
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p class="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700">已审核并取得原始材料识别授权</p>
+                <h3 class="mt-1 text-sm font-bold text-stone-900">${escapeHtml(item.title)}</h3>
+                <p class="mt-1 text-xs leading-relaxed text-stone-500">${escapeHtml(item.description || "未填写材料说明")}</p>
+              </div>
+              ${item.analysis
+                ? `<span class="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-bold text-stone-600">${escapeHtml(item.analysis.status)}</span>`
+                : realReady && item.realOcrEligible
+                  ? `<button type="button" data-material-real-start="${escapeHtml(item.submissionId)}" class="rounded-lg bg-[#123c3a] px-4 py-2 text-xs font-bold text-[#d9ad52]">运行真实 OCR</button>`
+                  : `<button type="button" disabled class="cursor-not-allowed rounded-lg bg-stone-200 px-4 py-2 text-xs font-bold text-stone-500">${realReady ? "暂不可识别" : "等待 OCR 配置"}</button>`}
+            </div>
+            <p class="mt-3 break-all text-[10px] text-stone-400">投稿 ID：${escapeHtml(item.submissionId)} · 投稿人：${escapeHtml(item.contributorName)}</p>
+            ${!item.analysis && item.realOcrBlockedReason ? `<p class="mt-2 text-xs text-amber-700">${escapeHtml(item.realOcrBlockedReason)}</p>` : ""}
+            ${materialAnalysisPanel(item.analysis)}
+          </div>
+        </article>`).join("") : `
+        <div class="rounded-2xl border border-dashed border-stone-300 bg-white p-6 text-center">
+          <p class="text-sm font-bold text-stone-700">当前没有可识别的真实图片投稿</p>
+          <p class="mt-2 text-xs leading-relaxed text-stone-500">这是正常状态。旧投稿没有授权原始文件识别，不会被自动纳入；用户以后上传时主动勾选新授权，审核通过后才会出现在这里。</p>
+        </div>`;
+
+      list.innerHTML = `
+        <section class="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700">Multimodal Foundation</p>
+              <h3 class="mt-1 text-lg font-bold text-stone-900">图片材料识别 · ${realReady ? "真实 OCR 已就绪" : "真实适配器待配置"}</h3>
+              <p class="mt-2 max-w-3xl text-xs leading-relaxed text-stone-600">${realReady
+                ? `已启用腾讯云通用文字识别。每张图片使用 10 分钟短时地址，单图不超过 ${Math.floor(Number(result.maxImageBytes || 0) / 1024 / 1024)}MB，每日最多 ${Number(result.dailyCallLimit || 0)} 次；结果脱敏后仍需人工校对。`
+                : "真实 OCR 代码已经接好，但云端开关或专用密钥尚未配置，因此不会读取原图、不会调用收费接口。下方虚构测试仍可安全使用。"}</p>
+              <div class="mt-3 flex flex-wrap gap-2 text-[10px]">
+                <span class="rounded-full bg-white px-3 py-1.5 font-bold ${result.realOcrEnabled ? "text-emerald-700" : "text-stone-500"}">开关：${result.realOcrEnabled ? "已开" : "未开"}</span>
+                <span class="rounded-full bg-white px-3 py-1.5 font-bold ${result.credentialsConfigured ? "text-emerald-700" : "text-stone-500"}">专用密钥：${result.credentialsConfigured ? "已配置" : "未配置"}</span>
+                <span class="rounded-full bg-white px-3 py-1.5 font-bold text-stone-600">区域：${escapeHtml(result.region || "ap-shanghai")}</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 text-center text-xs">
+              <div class="rounded-xl bg-white px-3 py-2"><strong class="block text-lg text-[#123c3a]">${Number(result.eligibleCount || 0)}</strong>已授权</div>
+              <div class="rounded-xl bg-white px-3 py-2"><strong class="block text-lg text-amber-700">${Number(result.needsReviewCount || 0)}</strong>待校对</div>
+              <div class="rounded-xl bg-white px-3 py-2"><strong class="block text-lg text-emerald-700">${Number(result.confirmedCount || 0)}</strong>已确认</div>
+            </div>
+          </div>
+        </section>
+        <section class="rounded-2xl border border-blue-200 bg-white p-5 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-bold uppercase tracking-[0.16em] text-blue-700">完全虚构的数据</p>
+              <h3 class="mt-1 text-sm font-bold text-stone-900">${escapeHtml(synthetic.title || "虚构图片 OCR 测试")}</h3>
+              <p class="mt-1 text-xs text-stone-500">不读取任何用户文件，可以安全地验证数据库写入与校对流程。</p>
+            </div>
+            <button type="button" data-material-synthetic-test class="rounded-lg bg-blue-700 px-4 py-2 text-xs font-bold text-white">${synthetic.analysis ? "重新生成虚构测试" : "运行虚构测试"}</button>
+          </div>
+          ${materialAnalysisPanel(synthetic.analysis)}
+        </section>
+        <section>
+          <div class="mb-3 flex items-center justify-between px-1">
+            <h3 class="text-sm font-bold text-stone-800">真实投稿授权队列</h3>
+            <span class="text-xs text-stone-400">仅显示已通过且单独授权的图片</span>
+          </div>
+          <div class="grid gap-4">${realCards}</div>
+        </section>`;
+    }
+
+    async function loadMaterialAnalysis() {
+      setActiveView("material-analysis", "材料识别");
+      viewCount.textContent = "正在读取";
+      message.className = "mt-2 text-xs text-stone-500";
+      message.textContent = "正在读取材料识别任务...";
+      try {
+        const result = await callMaterialWorker({ action: "getWorkspace" });
+        renderMaterialWorkspace(result);
+        viewCount.textContent = `${Number(result.eligibleCount || 0)} 条真实材料`;
+        message.className = "mt-2 text-xs text-emerald-700";
+        message.textContent = result.realOcrReady
+          ? "真实图片 OCR 已就绪；只有点击具体投稿的识别按钮才会产生调用。"
+          : "材料识别工作台已就绪；真实 OCR 尚未启用，不会产生接口费用。";
+      } catch (error) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+        list.innerHTML = '<div class="rounded-2xl border border-red-200 bg-white p-6 text-sm text-red-700">材料识别云函数尚未就绪。部署 materialWorker 后刷新本页即可。</div>';
+      }
+    }
+
+    async function runSyntheticMaterialTest(button) {
+      button.disabled = true;
+      button.textContent = "正在创建...";
+      try {
+        await callMaterialWorker({ action: "runSyntheticTest" });
+        await loadMaterialAnalysis();
+        message.textContent = "虚构图片识别任务已创建，请校对后确认或退回。";
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "运行虚构测试";
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function startRealMaterialAnalysis(button) {
+      const submissionId = button.dataset.materialRealStart;
+      button.disabled = true;
+      button.textContent = "正在创建...";
+      try {
+        await callMaterialWorker({ action: "runRealImageAnalysis", submissionId });
+        await loadMaterialAnalysis();
+        message.textContent = "真实 OCR 已完成，结果经过脱敏，正在等待管理员校对。";
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "运行真实 OCR";
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    async function reviewMaterialAnalysis(card, decision) {
+      const analysisId = card.dataset.materialAnalysisId;
+      const simulated = card.dataset.materialSimulated === "true";
+      const textarea = card.querySelector("[data-material-reviewed-text]");
+      const reviewedText = textarea ? textarea.value.trim() : "";
+      if (decision === "approved" && !reviewedText) {
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = "确认前请填写校对后的文字。";
+        return;
+      }
+      card.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      try {
+        await callMaterialWorker({ action: "reviewAnalysis", analysisId, decision, reviewedText });
+        await loadMaterialAnalysis();
+        message.textContent = decision === "approved"
+          ? simulated
+            ? "模拟识别结果已确认并留下审核记录；它仍不会进入正式故事。"
+            : "真实识别结果已确认；可以在后续故事整合阶段使用，但不会自动发布。"
+          : simulated ? "模拟识别结果已退回。" : "真实识别结果已退回。";
+      } catch (error) {
+        card.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+        message.className = "mt-2 text-xs text-red-600";
+        message.textContent = `${error.code || "ERROR"}：${error.message}`;
+      }
+    }
+
+    function renderItems(items, urls, resourceOptions) {
       if (!items.length) {
         list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">当前没有待审投稿。</div>';
         return;
@@ -478,6 +1899,11 @@
                 <span class="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700">待审核</span>
               </div>
               <p class="mt-3 break-all text-[10px] leading-relaxed text-stone-400">投稿人：${escapeHtml(item.contributorName || item.userId)}<br>投稿 ID：${id}<br>位置：${escapeHtml(item.regionName || "湖北")} ${escapeHtml(item.longitude)}，${escapeHtml(item.latitude)}<br>初审状态：${escapeHtml(initialReviewLabel(item.aiReviewStatus))}${item.aiReviewSummary ? ` · ${escapeHtml(item.aiReviewSummary)}` : ""}<br>通过奖励：${Number(item.rewardPoints || 100)} 积分</p>
+              <div class="mt-3 rounded-xl border border-stone-200 bg-stone-50 p-3">
+                <label class="text-xs font-bold text-stone-700">归入统一资源（可选）</label>
+                <p class="mt-1 text-[10px] leading-relaxed text-stone-500">${escapeHtml(resourceCandidateHint(item))}</p>
+                <div class="mt-2">${resourceBindingSelectHtml(item, resourceOptions)}</div>
+              </div>
               <textarea rows="3" placeholder="拒绝或要求修改时必须填写审核说明" class="mt-3 w-full rounded-xl border border-stone-200 p-3 text-xs outline-none focus:border-[#d9ad52]"></textarea>
               <div class="mt-3 flex flex-wrap gap-2">
                 <button data-status="approved" class="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white">通过并发积分</button>
@@ -492,6 +1918,8 @@
     async function review(card, status) {
       const submissionId = card.dataset.id;
       const reviewNote = card.querySelector("textarea").value.trim();
+      const resourceSelect = card.querySelector("[data-resource-binding-select]");
+      const resourceId = status === "approved" && resourceSelect ? resourceSelect.value : "";
       if (status !== "approved" && !reviewNote) {
         message.className = "mt-2 text-xs text-red-600";
         message.textContent = "拒绝或要求修改时必须填写审核说明。";
@@ -500,10 +1928,10 @@
       const buttons = card.querySelectorAll("button");
       buttons.forEach((button) => { button.disabled = true; });
       try {
-        const result = await callAdmin({ action: "review", submissionId, status, reviewNote });
+        const result = await callAdmin({ action: "review", submissionId, status, reviewNote, resourceId });
         card.remove();
         message.className = "mt-2 text-xs text-emerald-700";
-        message.textContent = `审核完成：${submissionId} → ${status}${result.rewardPoints ? `，已发放 ${result.rewardPoints} 积分` : ""}`;
+        message.textContent = `审核完成：${submissionId} → ${status}${result.rewardPoints ? `，已发放 ${result.rewardPoints} 积分` : ""}${result.resourceId ? `，已关联 ${result.resourceTitle || result.resourceId}` : ""}`;
         if (!list.querySelector("article")) {
           list.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">当前没有待审投稿。</div>';
         }
@@ -516,17 +1944,50 @@
 
     document.getElementById("login-form").addEventListener("submit", login);
     document.getElementById("refresh").addEventListener("click", loadPending);
+    document.getElementById("resource-binding-refresh").addEventListener("click", loadResourceBindings);
     document.getElementById("supplement-refresh").addEventListener("click", loadSupplements);
+    document.getElementById("comment-refresh").addEventListener("click", loadComments);
+    document.getElementById("comment-filter-apply").addEventListener("click", loadComments);
     document.getElementById("report-refresh").addEventListener("click", loadReports);
     document.getElementById("feedback-refresh").addEventListener("click", loadFeedback);
+    document.getElementById("redemption-refresh").addEventListener("click", loadRedemptions);
+    document.getElementById("story-links-refresh").addEventListener("click", loadStoryLinks);
+    document.getElementById("story-drafts-refresh").addEventListener("click", loadStoryDrafts);
+    document.getElementById("ai-status-refresh").addEventListener("click", loadAiStatus);
+    document.getElementById("material-analysis-refresh").addEventListener("click", loadMaterialAnalysis);
+    document.getElementById("resource-preview-refresh").addEventListener("click", loadResourceSeedPreview);
+    document.getElementById("list").addEventListener("submit", (event) => {
+      if (event.target && event.target.id === "redemption-lookup-form") lookupRedemption(event);
+      if (event.target && event.target.id === "story-link-form") saveStoryLink(event);
+      if (event.target && event.target.id === "story-draft-generate-form") generateStoryDraft(event);
+      if (event.target && event.target.matches("[data-story-claim-form]")) saveStoryClaim(event);
+      if (event.target && event.target.matches("[data-story-revision-form]")) createStoryRevision(event);
+      if (event.target && event.target.matches("[data-story-impact-form]")) createStoryRevision(event);
+      if (event.target && event.target.matches("[data-story-gap-task-form]")) publishStoryGapTask(event);
+    });
+    document.getElementById("list").addEventListener("input", (event) => {
+      const input = event.target.closest("[data-resource-confirm-input]");
+      if (!input) return;
+      const card = input.closest("[data-resource-import-card]");
+      const importButton = card && card.querySelector("[data-resource-seed-import]");
+      if (importButton) importButton.disabled = input.value.trim() !== input.dataset.expected;
+    });
     document.getElementById("list").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-status]");
       const card = event.target.closest("article[data-id]");
       if (button && card) review(card, button.dataset.status);
+      const resourceBindingButton = event.target.closest("button[data-save-resource-binding]");
+      const resourceBindingCard = event.target.closest("article[data-binding-submission-id]");
+      if (resourceBindingButton && resourceBindingCard) saveResourceBinding(resourceBindingCard, resourceBindingButton);
       const supplementButton = event.target.closest("button[data-supplement-status]");
       const supplementCard = event.target.closest("article[data-supplement-id]");
       if (supplementButton && supplementCard) {
         reviewSupplement(supplementCard, supplementButton.dataset.supplementStatus);
+      }
+      const commentButton = event.target.closest("button[data-comment-status]");
+      const commentCard = event.target.closest("article[data-comment-id]");
+      if (commentButton && commentCard) {
+        moderateComment(commentCard, commentButton.dataset.commentStatus);
       }
       const reportButton = event.target.closest("button[data-resolution]");
       const reportCard = event.target.closest("article[data-report-id]");
@@ -536,6 +1997,47 @@
       if (feedbackButton && feedbackCard) {
         resolveFeedback(feedbackCard, feedbackButton.dataset.feedbackResolution);
       }
+      const redemptionButton = event.target.closest("button[data-redeem-code]");
+      if (redemptionButton) redeemCode(redemptionButton.dataset.redeemCode, redemptionButton);
+      const resourceImportButton = event.target.closest("button[data-resource-seed-import]");
+      if (resourceImportButton) applyResourceSeed(resourceImportButton);
+      const resourcePrepareButton = event.target.closest("button[data-resource-seed-prepare]");
+      if (resourcePrepareButton) showResourceSeedConfirmation(resourcePrepareButton);
+      const resourceCancelButton = event.target.closest("button[data-resource-seed-cancel]");
+      if (resourceCancelButton) cancelResourceSeedConfirmation(resourceCancelButton);
+      const storyArchiveButton = event.target.closest("button[data-story-link-archive]");
+      const storyLinkCard = event.target.closest("article[data-story-link-id]");
+      if (storyArchiveButton && storyLinkCard) archiveStoryLink(storyLinkCard);
+      const aiTestButton = event.target.closest("button[data-ai-synthetic-test]");
+      if (aiTestButton) runSyntheticAiTest(aiTestButton);
+      const aiAnalyzeButton = event.target.closest("button[data-ai-analyze-submission]");
+      if (aiAnalyzeButton) analyzeConsentedSubmission(aiAnalyzeButton);
+      const materialSyntheticButton = event.target.closest("button[data-material-synthetic-test]");
+      if (materialSyntheticButton) runSyntheticMaterialTest(materialSyntheticButton);
+      const materialStartButton = event.target.closest("button[data-material-real-start]");
+      if (materialStartButton) startRealMaterialAnalysis(materialStartButton);
+      const materialReviewButton = event.target.closest("button[data-material-review]");
+      const materialReviewCard = event.target.closest("[data-material-analysis-id]");
+      if (materialReviewButton && materialReviewCard) {
+        reviewMaterialAnalysis(materialReviewCard, materialReviewButton.dataset.materialReview);
+      }
+      const aiCandidateCard = event.target.closest("article[data-ai-candidate-id]");
+      const aiConfirmButton = event.target.closest("button[data-ai-candidate-confirm]");
+      if (aiCandidateCard && aiConfirmButton) confirmAiCandidate(aiCandidateCard);
+      const aiRejectButton = event.target.closest("button[data-ai-candidate-reject]");
+      if (aiCandidateCard && aiRejectButton) rejectAiCandidate(aiCandidateCard);
+      const storyDraftCard = event.target.closest("article[data-story-draft-id]");
+      const storyPublishButton = event.target.closest("button[data-story-draft-publish]");
+      if (storyDraftCard && storyPublishButton) publishStoryDraft(storyDraftCard);
+      const storyChainArchiveButton = event.target.closest("button[data-story-draft-archive]");
+      if (storyDraftCard && storyChainArchiveButton) archiveStoryDraft(storyDraftCard);
+      const storyClaimRetireButton = event.target.closest("button[data-story-claim-retire]");
+      const storyClaimCard = event.target.closest("article[data-story-claim-id]");
+      if (storyClaimRetireButton && storyClaimCard) retireStoryClaim(storyClaimCard, storyClaimRetireButton);
+      const storyGapTaskCard = event.target.closest("article[data-story-gap-task-id]");
+      if (storyGapTaskCard && event.target.closest("button[data-story-gap-task-archive]")) updateStoryGapTask(storyGapTaskCard, "archiveStoryGapTask");
+      if (storyGapTaskCard && event.target.closest("button[data-story-gap-task-fulfill]")) updateStoryGapTask(storyGapTaskCard, "fulfillStoryGapTask");
+      if (storyGapTaskCard && event.target.closest("button[data-story-gap-task-award]")) updateStoryGapTask(storyGapTaskCard, "awardStoryGapTask");
     });
     logoutButton.addEventListener("click", async () => {
       await auth.signOut();

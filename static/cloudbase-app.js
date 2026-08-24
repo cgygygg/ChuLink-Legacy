@@ -12,6 +12,7 @@
   let bootstrapPromise = null;
   let latestBootstrap = null;
   let activeInteractionSubmissionId = '';
+  let activeInteractionTarget = null;
   let activeReplyCommentId = '';
   let loadedInteractionComments = [];
   let interactionHasMoreComments = false;
@@ -21,9 +22,24 @@
   let activeCloudSupplement = null;
   let registerVerificationInfo = null;
   let resetVerificationInfo = null;
+let activeReward = null;
+let rewardRedeemPending = false;
+let pendingCommentRequestId = '';
+let pendingCommentFingerprint = '';
+let activeStoryEvidenceResult = null;
+let activeStoryEvidenceView = 'story';
+let activeStoryEvidenceNodeId = '';
+let storyFeedbackSubmitting = false;
+let activeStoryGapTask = null;
+  let cloudNotifications = [];
+  let cloudNotificationUnreadCount = 0;
   const cloudSupplementState = new Map();
   let publicFeedRefreshTimer = null;
   const PUBLIC_FEED_REFRESH_MS = 60 * 1000;
+  let unifiedResources = [];
+  let unifiedResourceSyncState = { status: 'idle', count: 0, updatedAt: null };
+  let unifiedRelatedRequestId = 0;
+  let activeUnifiedResourceDetail = null;
   const legacyToggleSubmissionLike = typeof toggleSubmissionLike === 'function'
     ? toggleSubmissionLike
     : null;
@@ -71,6 +87,132 @@
     if (!value) return '刚刚';
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? '刚刚' : date.toLocaleString('zh-CN');
+  }
+
+  function notificationTypeLabel(type) {
+    return {
+      comment_reply: '评论回复',
+      submission_comment: '投稿互动',
+      comment_hidden: '内容处理',
+      comment_restored: '内容恢复',
+      report_resolved: '举报处理',
+      report_dismissed: '举报复核',
+      feedback_resolved: '反馈回复',
+feedback_closed: '反馈处理',
+      reward_redeemed: '兑换核销'
+    }[type] || '互动消息';
+  }
+
+  function updateNotificationEntry() {
+    const stable = isStableAccount(cloudUser);
+    const entry = document.getElementById('header-notification-entry');
+    const badge = document.getElementById('header-notification-badge');
+    if (entry) {
+      entry.classList.toggle('hidden', !stable);
+      entry.classList.toggle('flex', stable);
+    }
+    if (badge) {
+      badge.textContent = cloudNotificationUnreadCount > 99 ? '99+' : String(cloudNotificationUnreadCount);
+      badge.classList.toggle('hidden', !stable || cloudNotificationUnreadCount === 0);
+    }
+  }
+
+  function renderCloudNotifications() {
+    const list = document.getElementById('cloud-notification-list');
+    const summary = document.getElementById('cloud-notification-summary');
+    const readAll = document.getElementById('cloud-notification-read-all');
+    updateNotificationEntry();
+    if (!list || !summary) return;
+    summary.textContent = cloudNotificationUnreadCount
+      ? `${cloudNotificationUnreadCount} 条未读消息`
+      : '消息均已读';
+    if (readAll) readAll.classList.toggle('hidden', cloudNotificationUnreadCount === 0);
+    list.innerHTML = cloudNotifications.length ? cloudNotifications.map((item) => `
+      <button type="button" data-notification-id="${safeText(item.id)}" class="block w-full rounded-xl border ${item.isRead ? 'border-stone-200 bg-white' : 'border-sandGold/40 bg-sandGold/5'} p-3 text-left transition hover:border-deepTeal/30">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span class="rounded-full ${item.isRead ? 'bg-stone-100 text-stone-500' : 'bg-deepTeal text-sandGold'} px-2 py-0.5 text-[9px] font-bold">${safeText(notificationTypeLabel(item.type))}</span>
+              ${item.actorName ? `<span class="text-[9px] text-stone-400">${safeText(item.actorName)}</span>` : ''}
+            </div>
+            <p class="mt-2 text-xs font-bold text-stone-800">${safeText(item.title || '互动消息')}</p>
+            <p class="mt-1 line-clamp-2 text-[10px] leading-relaxed text-stone-600">${safeText(item.message || '')}</p>
+            <p class="mt-1.5 text-[9px] text-stone-400">${safeText(displayDate(item.createdAt))}${item.targetTitle ? ` · ${safeText(item.targetTitle)}` : ''}</p>
+          </div>
+          ${item.isRead ? '' : '<span class="mt-1 h-2 w-2 shrink-0 rounded-full bg-cinnabarRed"></span>'}
+        </div>
+      </button>
+    `).join('') : '<div class="rounded-xl border border-stone-200 bg-stone-50 p-6 text-center text-xs text-stone-500">暂时没有互动消息。</div>';
+  }
+
+  async function loadCloudNotifications() {
+    if (!isStableAccount(cloudUser)) {
+      cloudNotifications = [];
+      cloudNotificationUnreadCount = 0;
+      updateNotificationEntry();
+      return;
+    }
+    try {
+      const result = await callCore({ action: 'getNotifications', limit: 40 });
+      cloudNotifications = result.items || [];
+      cloudNotificationUnreadCount = Number(result.unreadCount || 0);
+      renderCloudNotifications();
+    } catch (error) {
+      console.warn('[CloudBase notifications]', error);
+    }
+  }
+
+  async function openCloudNotifications() {
+    try {
+      await requireInteractiveAccount();
+      const modal = document.getElementById('cloud-notification-modal');
+      if (modal) modal.classList.remove('hidden');
+      await loadCloudNotifications();
+      if (window.lucide) lucide.createIcons();
+    } catch (error) {
+      if (typeof showToast === 'function') showToast(error.message, 'alert-circle');
+    }
+  }
+
+  function closeCloudNotifications() {
+    const modal = document.getElementById('cloud-notification-modal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  async function openCloudNotification(notificationId) {
+    const item = cloudNotifications.find((notification) => notification.id === notificationId);
+    if (!item) return;
+    if (!item.isRead) {
+      try {
+        await callCore({ action: 'markNotificationRead', notificationId });
+        item.isRead = true;
+        cloudNotificationUnreadCount = Math.max(0, cloudNotificationUnreadCount - 1);
+        renderCloudNotifications();
+      } catch (error) {
+        if (typeof showToast === 'function') showToast(error.message, 'alert-circle');
+        return;
+      }
+    }
+    closeCloudNotifications();
+    if (String(item.type || '').startsWith('story_contribution_')) {
+      if (typeof switchTab === 'function') switchTab('profile');
+      document.getElementById('cloud-contribution-impact')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    if (item.targetType && item.targetId) {
+      openCloudDiscussion(item.targetType, item.targetId, item.targetTitle || '内容讨论');
+    }
+  }
+
+  async function markAllCloudNotificationsRead() {
+    try {
+      await callCore({ action: 'markNotificationRead', all: true });
+      cloudNotifications.forEach((item) => { item.isRead = true; });
+      cloudNotificationUnreadCount = 0;
+      renderCloudNotifications();
+    } catch (error) {
+      if (typeof showToast === 'function') showToast(error.message, 'alert-circle');
+    }
   }
 
   function reviewStageLabel(status) {
@@ -287,11 +429,22 @@
           <button id="cloud-profile-upload" type="button" class="rounded-lg border border-white/20 bg-white/10 px-2 py-2 text-[10px] font-bold">继续投稿</button>
           <button id="cloud-profile-edit" type="button" class="rounded-lg border border-white/20 bg-white/10 px-2 py-2 text-[10px] font-bold">编辑资料</button>
           <button id="cloud-feedback-open" type="button" class="rounded-lg border border-white/20 bg-white/10 px-2 py-2 text-[10px] font-bold">意见反馈</button>
+          <button id="cloud-notification-open" type="button" class="rounded-lg border border-white/20 bg-white/10 px-2 py-2 text-[10px] font-bold">我的消息</button>
           <button id="cloud-account-action" type="button" class="rounded-lg bg-sandGold px-2 py-2 text-[10px] font-bold text-deepTeal">账号登录</button>
         </div>
         <div class="mt-3 grid grid-cols-2 gap-2 border-t border-white/10 pt-3">
           <button type="button" data-profile-feature="profile-badges-section" class="rounded-lg bg-white/10 px-2 py-2 text-[10px] font-bold text-stone-100">查看徽章</button>
           <button type="button" data-profile-feature="profile-coupons-section" class="rounded-lg bg-white/10 px-2 py-2 text-[10px] font-bold text-stone-100">兑换优惠券</button>
+        </div>
+      </section>
+      <section id="cloud-contribution-impact" class="overflow-hidden rounded-2xl border border-[#b68a4a]/30 bg-[#fffaf1] shadow-sm">
+        <div class="flex items-stretch">
+          <div class="flex w-14 shrink-0 items-center justify-center bg-[#241a17] text-[#e3bd69]"><span class="cultural-font text-2xl font-black">链</span></div>
+          <div class="min-w-0 flex-1 p-4">
+            <div class="flex items-start justify-between gap-3"><div><p class="text-[9px] font-black uppercase tracking-[0.16em] text-[#9e2f24]">我的文化贡献</p><h4 class="mt-1 text-sm font-bold text-stone-900">被故事采用的真实资料</h4></div><strong id="cloud-impact-adopted" class="text-2xl text-[#7d2b23]">0</strong></div>
+            <div class="mt-3 grid grid-cols-2 gap-2 text-center"><div class="rounded-lg bg-white p-2"><strong id="cloud-impact-stories" class="block text-sm text-stone-800">0</strong><span class="text-[9px] text-stone-400">帮助补全故事</span></div><div class="rounded-lg bg-white p-2"><strong id="cloud-impact-points" class="block text-sm text-stone-800">0</strong><span class="text-[9px] text-stone-400">贡献额外积分</span></div></div>
+            <div id="cloud-impact-recent" class="mt-3"></div>
+          </div>
         </div>
       </section>
       <section class="space-y-2">
@@ -332,6 +485,7 @@
     });
     document.getElementById('cloud-profile-edit').addEventListener('click', editCloudNickname);
     document.getElementById('cloud-feedback-open').addEventListener('click', openCloudFeedback);
+    document.getElementById('cloud-notification-open').addEventListener('click', openCloudNotifications);
     document.getElementById('cloud-feedback-add').addEventListener('click', openCloudFeedback);
     document.getElementById('cloud-record-refresh').addEventListener('click', refreshCloudProfile);
     document.getElementById('cloud-record-filters').addEventListener('click', (event) => {
@@ -484,6 +638,62 @@
           </form>
         </div>
       </div>
+      <div id="cloud-reward-modal" class="hidden fixed inset-0 z-[92] flex items-center justify-center bg-black/70 p-4">
+        <div class="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-[9px] font-black uppercase tracking-[0.18em] text-sandGold">Reward</p>
+              <h3 id="cloud-reward-modal-title" class="mt-1 text-base font-bold text-stone-900">确认兑换</h3>
+              <p id="cloud-reward-modal-sponsor" class="mt-1 text-[10px] text-stone-500"></p>
+            </div>
+            <button type="button" data-close-reward class="text-stone-400" aria-label="关闭">✕</button>
+          </div>
+          <p id="cloud-reward-modal-description" class="mt-3 rounded-xl bg-stone-50 p-3 text-[10px] leading-relaxed text-stone-600"></p>
+          <div class="mt-3 grid grid-cols-2 gap-2 text-center">
+            <div class="rounded-xl border border-stone-200 p-3">
+              <p class="text-[9px] text-stone-400">需要积分</p>
+              <p id="cloud-reward-modal-cost" class="mt-1 text-lg font-black text-deepTeal">0</p>
+            </div>
+            <div class="rounded-xl border border-stone-200 p-3">
+              <p class="text-[9px] text-stone-400">当前积分</p>
+              <p id="cloud-reward-modal-balance" class="mt-1 text-lg font-black text-deepTeal">0</p>
+            </div>
+          </div>
+          <p id="cloud-reward-message" class="mt-2 min-h-4 text-[10px] text-red-600"></p>
+          <div class="mt-2 flex gap-2">
+            <button type="button" data-close-reward class="flex-1 rounded-xl bg-stone-100 py-2.5 text-xs font-bold text-stone-600">再想想</button>
+            <button id="cloud-reward-confirm" type="button" class="flex-1 rounded-xl bg-deepTeal py-2.5 text-xs font-bold text-sandGold">确认兑换</button>
+          </div>
+          <p class="mt-3 text-center text-[9px] text-stone-400">兑换成功后积分立即扣除，凭证可在“我的兑换”中找回。</p>
+        </div>
+      </div>
+      <div id="cloud-redemption-result-modal" class="hidden fixed inset-0 z-[94] flex items-center justify-center bg-black/75 p-4">
+        <div class="w-full max-w-sm overflow-hidden rounded-3xl bg-white text-center shadow-2xl">
+          <div class="bg-deepTeal px-5 pb-5 pt-6 text-white">
+          <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+            <span class="text-xl">✓</span>
+          </div>
+            <p class="mt-3 text-[9px] font-black uppercase tracking-[0.22em] text-sandGold">ChuLink Voucher</p>
+            <h3 class="mt-1 text-lg font-black">兑换成功</h3>
+            <p id="cloud-redemption-result-title" class="mt-1 text-[10px] text-stone-200"></p>
+          </div>
+          <div class="px-5 pb-5 pt-4">
+            <div class="rounded-2xl border border-stone-200 bg-[#fffdf8] p-4 shadow-inner">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-[9px] font-black uppercase tracking-[0.16em] text-stone-400">演示核销条码</p>
+                <span class="rounded-full bg-amber-50 px-2 py-1 text-[8px] font-black text-amber-700">DEMO</span>
+              </div>
+              <div id="cloud-redemption-result-barcode" class="mt-3 min-h-[78px] w-full overflow-hidden rounded-lg bg-white px-2 py-1" aria-label="兑换码条形码"></div>
+              <p id="cloud-redemption-result-code" class="mt-2 break-all font-mono text-base font-black tracking-[0.15em] text-deepTeal"></p>
+              <button id="cloud-redemption-copy" type="button" class="mt-3 rounded-lg border border-deepTeal/20 bg-white px-3 py-1.5 text-[10px] font-bold text-deepTeal">复制兑换码</button>
+            </div>
+            <p id="cloud-redemption-result-expiry" class="mt-3 text-[10px] font-bold text-cinnabarRed"></p>
+            <p id="cloud-redemption-result-instructions" class="mt-2 rounded-xl bg-stone-50 p-3 text-left text-[10px] leading-relaxed text-stone-600"></p>
+            <p class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-left text-[9px] leading-relaxed text-amber-800">当前为平台演示凭证，用于验证生成、展示和管理员核销流程；接入合作商家后再替换为真实权益券。</p>
+            <button id="cloud-redemption-result-close" type="button" class="mt-4 w-full rounded-xl bg-deepTeal py-2.5 text-xs font-bold text-sandGold">收好兑换码</button>
+          </div>
+        </div>
+      </div>
     `);
     document.querySelectorAll('[data-close-profile-edit]').forEach((button) => {
       button.addEventListener('click', () => document.getElementById('cloud-profile-edit-modal').classList.add('hidden'));
@@ -491,14 +701,625 @@
     document.querySelectorAll('[data-close-feedback]').forEach((button) => {
       button.addEventListener('click', () => document.getElementById('cloud-feedback-modal').classList.add('hidden'));
     });
+    document.querySelectorAll('[data-close-reward]').forEach((button) => {
+      button.addEventListener('click', () => document.getElementById('cloud-reward-modal').classList.add('hidden'));
+    });
     document.getElementById('cloud-profile-edit-form').addEventListener('submit', saveCloudNickname);
     document.getElementById('cloud-feedback-form').addEventListener('submit', submitCloudFeedback);
+    document.getElementById('cloud-reward-confirm').addEventListener('click', confirmCloudRewardRedemption);
+    document.getElementById('cloud-redemption-copy').addEventListener('click', copyActiveRedemptionCode);
+    document.getElementById('cloud-redemption-result-close').addEventListener('click', () => {
+      document.getElementById('cloud-redemption-result-modal').classList.add('hidden');
+    });
   }
 
   function openCloudLogin() {
     injectLoginModal();
     switchCloudAuthMode('login');
     document.getElementById('cloud-login-modal').classList.remove('hidden');
+  }
+
+  function injectStoryEvidenceModal() {
+    if (document.getElementById('cloud-story-evidence-modal')) return;
+    document.body.insertAdjacentHTML('beforeend', `
+      <div id="cloud-story-evidence-modal" class="hidden fixed inset-0 z-[96] flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-4">
+        <section class="story-evidence-shell max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-t-3xl shadow-2xl sm:rounded-3xl">
+          <header class="story-evidence-header sticky top-0 z-10 flex items-start justify-between gap-4 px-5 py-4">
+            <div>
+              <p class="text-[9px] font-black tracking-[0.24em] text-[#d7b46e]">楚韵链迹 · 共同讲述</p>
+              <h2 id="cloud-story-evidence-title" class="cultural-font mt-1 text-lg font-black text-[#fff5df]">链迹故事</h2>
+              <p id="cloud-story-evidence-subtitle" class="mt-1 text-[10px] text-[#e7d7c4]/70">由社区共同留下的真实文化资料</p>
+            </div>
+            <button id="cloud-story-evidence-close" type="button" class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/10 text-[#fff5df]" aria-label="关闭链迹故事">✕</button>
+          </header>
+          <div id="cloud-story-evidence-content" class="p-4 sm:p-5">
+            <div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在整理资料来源...</div>
+          </div>
+        </section>
+        <div id="cloud-story-claim-drawer" class="hidden fixed inset-0 z-[97] flex items-end bg-black/45">
+          <section class="max-h-[78vh] w-full overflow-y-auto rounded-t-3xl border-t border-[#d7b46e]/30 bg-[#fffaf1] px-5 pb-7 pt-4 shadow-2xl sm:mx-auto sm:max-w-xl">
+            <div class="sticky top-0 z-10 flex items-center justify-between gap-3 bg-[#fffaf1]/95 pb-3 backdrop-blur">
+              <div><p class="text-[9px] font-black tracking-[0.2em] text-[#9e2f24]">句级依据</p><h3 class="mt-1 font-black text-stone-900">这句话依据什么</h3></div>
+              <button id="cloud-story-claim-close" type="button" class="flex h-11 w-11 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-700" aria-label="关闭依据详情">✕</button>
+            </div>
+            <div id="cloud-story-claim-content"></div>
+          </section>
+        </div>
+      </div>
+    `);
+    document.getElementById('cloud-story-evidence-close').addEventListener('click', closeStoryEvidence);
+    document.getElementById('cloud-story-evidence-modal').addEventListener('click', (event) => {
+      if (event.target.id === 'cloud-story-evidence-modal') closeStoryEvidence();
+    });
+    document.getElementById('cloud-story-claim-close').addEventListener('click', closeStoryClaimDrawer);
+    document.getElementById('cloud-story-claim-drawer').addEventListener('click', (event) => {
+      if (event.target.id === 'cloud-story-claim-drawer') closeStoryClaimDrawer();
+    });
+  }
+
+  function closeStoryEvidence() {
+    closeStoryClaimDrawer();
+    const modal = document.getElementById('cloud-story-evidence-modal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  function closeStoryClaimDrawer() {
+    const drawer = document.getElementById('cloud-story-claim-drawer');
+    if (drawer) drawer.classList.add('hidden');
+  }
+
+  function storyRelationLabel(value) {
+    return {
+      documents_feature: '建筑与工艺记录',
+      documents_inscription: '题刻与文字记录',
+      documents_place: '地点现状记录',
+      documents_oral_history: '口述与回忆',
+      shows_change_over_time: '时间变化见证',
+      supports_story: '故事线索补充'
+    }[value] || '故事线索补充';
+  }
+
+  function storyEvidenceMedia(submission) {
+    const fileUrl = safeText(submission && submission.fileUrl);
+    if (!fileUrl) return '';
+    if (submission.assetType === 'audio') {
+      return `<audio controls preload="none" class="mt-3 w-full" src="${fileUrl}"></audio>`;
+    }
+    if (submission.assetType === 'video') {
+      return `<video controls preload="metadata" class="mt-3 max-h-72 w-full rounded-xl bg-black" src="${fileUrl}"></video>`;
+    }
+    return `<img loading="lazy" src="${fileUrl}" alt="${safeText(submission.title || '社区资料')}" class="mt-3 max-h-80 w-full rounded-xl object-cover">`;
+  }
+
+  function renderStoryBodyWithClaims(body, claims, chapterIndex) {
+    const text = String(body || '');
+    const positioned = (claims || [])
+      .filter((claim) => Number(claim.chapterIndex) === chapterIndex && claim.text)
+      .map((claim) => ({ ...claim, position: text.indexOf(claim.text) }))
+      .filter((claim) => claim.position >= 0)
+      .sort((left, right) => left.position - right.position || right.text.length - left.text.length);
+    if (!positioned.length) return safeText(text).replace(/\n/g, '<br>');
+    let cursor = 0;
+    let number = 0;
+    const parts = [];
+    positioned.forEach((claim) => {
+      if (claim.position < cursor) return;
+      parts.push(safeText(text.slice(cursor, claim.position)));
+      parts.push(safeText(text.slice(claim.position, claim.position + claim.text.length)));
+      number += 1;
+      parts.push(`<button type="button" data-story-open-claim="${safeText(claim.id)}" class="mx-1 inline-flex min-h-7 items-center rounded-full border border-[#9e2f24]/25 bg-[#9e2f24]/5 px-2 py-0.5 align-middle text-[9px] font-black text-[#8f302b]" aria-label="查看第 ${number} 条事实依据">依据 ${number}</button>`);
+      cursor = claim.position + claim.text.length;
+    });
+    parts.push(safeText(text.slice(cursor)));
+    return parts.join('').replace(/\n/g, '<br>');
+  }
+
+  function openStoryClaimDrawer(claimId) {
+    const result = activeStoryEvidenceResult || {};
+    const claim = (result.claims || []).find((item) => item.id === claimId);
+    const drawer = document.getElementById('cloud-story-claim-drawer');
+    const content = document.getElementById('cloud-story-claim-content');
+    if (!claim || !drawer || !content) return;
+    const sourceMap = new Map((result.items || []).map((item) => [item.id, item]));
+    const sources = (claim.sourceLinkIds || []).map((id) => sourceMap.get(id)).filter(Boolean);
+    content.innerHTML = `
+      <blockquote class="rounded-2xl border-l-4 border-[#9e2f24] bg-white px-4 py-4 text-sm font-bold leading-7 text-stone-800">${safeText(claim.text)}</blockquote>
+      <p class="mt-4 text-[10px] leading-relaxed text-stone-500">以下原始材料已经过投稿审核和管理员事实确认。它们只支撑上面这句话，不代表整篇故事的所有内容。</p>
+      <div class="mt-4 space-y-3">
+        ${sources.map((source, index) => {
+          const submission = source.submission || {};
+          return `<article class="rounded-2xl border border-[#d8c6a7] bg-white p-4">
+            <div class="flex items-start gap-3"><span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#241a17] text-[10px] font-black text-[#e3bd69]">${index + 1}</span><div><h4 class="text-xs font-black text-stone-900">${safeText(submission.title || '社区文化记录')}</h4><p class="mt-1 text-[10px] leading-5 text-stone-500">${safeText(source.evidenceSummary || submission.description)}</p></div></div>
+            ${storyEvidenceMedia(submission)}
+            <p class="mt-3 border-t border-stone-100 pt-3 text-[9px] text-stone-400">贡献者：${safeText(submission.contributorName || '社区守护者')}${submission.regionName ? ` · ${safeText(submission.regionName)}` : ''}</p>
+          </article>`;
+        }).join('')}
+      </div>`;
+    drawer.classList.remove('hidden');
+  }
+
+  function renderStoryTrail(result) {
+    const nodes = result.trail && Array.isArray(result.trail.nodes) ? result.trail.nodes.slice(0, 5) : [];
+    if (nodes.length < 2) return '';
+    return `
+      <section class="overflow-hidden rounded-2xl border border-[#b68a4a]/25 bg-white p-4">
+        <div class="flex items-end justify-between gap-3"><div><p class="text-[9px] font-black tracking-[0.18em] text-[#9e2f24]">朱漆链迹</p><h4 class="mt-1 text-sm font-black text-stone-900">这些材料为什么连在一起</h4></div><span class="text-[9px] text-stone-400">${Number(result.trail.totalEvidenceCount || nodes.length - 1)} 份资料</span></div>
+        <div class="mt-4 overflow-x-auto pb-2">
+          <ol class="flex min-w-max items-stretch">
+            ${nodes.map((node, index) => `<li class="relative flex w-40 shrink-0 items-start ${index ? 'pl-7' : ''}">
+              ${index ? '<span class="absolute left-0 top-4 h-0.5 w-7 bg-[#9e2f24]/55"></span>' : ''}
+              ${node.kind === 'evidence' ? `<button type="button" data-story-trail-source="${safeText(node.sourceLinkId)}" class="w-full rounded-xl border border-[#eadbc3] bg-[#fffaf1] p-3 text-left transition hover:border-[#9e2f24]/40">` : '<div class="w-full rounded-xl bg-[#241a17] p-3 text-[#fff5df]">'}
+                <span class="flex h-6 w-6 items-center justify-center rounded-full ${node.kind === 'resource' ? 'bg-[#d7b46e] text-[#241a17]' : 'bg-[#9e2f24] text-white'} text-[9px] font-black">${index + 1}</span>
+                <strong class="mt-2 block text-[11px] leading-5">${safeText(node.label)}</strong>
+                <span class="mt-1 block text-[9px] leading-4 ${node.kind === 'resource' ? 'text-[#eadcca]/70' : 'text-stone-500'}">${safeText(node.why)}</span>
+              ${node.kind === 'evidence' ? '</button>' : '</div>'}
+            </li>`).join('')}
+          </ol>
+        </div>
+        <p class="mt-1 text-[9px] text-stone-400">点击材料节点可查看原始记录；链迹只表达已确认关系，不表示 AI 已证明历史因果。</p>
+      </section>`;
+  }
+
+  function storyGraphLines(value, maxLength) {
+    const text = String(value || '').trim();
+    if (!text) return ['未命名'];
+    const compact = text.length > maxLength * 2 ? `${text.slice(0, maxLength * 2 - 1)}…` : text;
+    return compact.length > maxLength
+      ? [compact.slice(0, maxLength), compact.slice(maxLength)]
+      : [compact];
+  }
+
+  function storyGraphText(lines, x, color, size, weight) {
+    const startY = lines.length > 1 ? -5 : 3;
+    return `<text x="${x}" y="${startY}" text-anchor="middle" fill="${color}" font-size="${size}" font-weight="${weight}" font-family="'Noto Serif SC', serif">${lines.map((line, index) => `<tspan x="${x}" dy="${index ? 14 : 0}">${safeText(line)}</tspan>`).join('')}</text>`;
+  }
+
+  function renderStoryEvidenceGraph(result) {
+    const items = (result.items || []).slice(0, 16);
+    const resource = result.resource || {};
+    const groups = [];
+    const groupMap = new Map();
+    items.forEach((item) => {
+      const key = item.relationType || 'supports_story';
+      if (!groupMap.has(key)) {
+        const group = { key, label: storyRelationLabel(key), items: [] };
+        groupMap.set(key, group);
+        groups.push(group);
+      }
+      groupMap.get(key).items.push(item);
+    });
+    const rowGap = 70;
+    const graphHeight = Math.max(360, items.length * rowGap + 70);
+    let nextY = 55;
+    groups.forEach((group) => {
+      group.items.forEach((item) => {
+        item.__storyGraphY = nextY;
+        nextY += rowGap;
+      });
+      group.__storyGraphY = group.items.reduce((sum, item) => sum + item.__storyGraphY, 0) / group.items.length;
+    });
+    const rootY = groups.reduce((sum, group) => sum + group.__storyGraphY, 0) / Math.max(1, groups.length);
+    const relations = groups.map((group) => `
+      <path d="M 190 ${rootY} C 235 ${rootY}, 225 ${group.__storyGraphY}, 270 ${group.__storyGraphY}" fill="none" stroke="#c5a766" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+      ${group.items.map((item) => `
+        <path d="M 440 ${group.__storyGraphY} C 500 ${group.__storyGraphY}, 500 ${item.__storyGraphY}, 565 ${item.__storyGraphY}" fill="none" stroke="#6e9995" stroke-width="1.6" stroke-linecap="round" opacity="0.72"/>
+      `).join('')}
+    `).join('');
+    const groupNodes = groups.map((group) => `
+      <g transform="translate(355 ${group.__storyGraphY})">
+        <rect x="-85" y="-24" width="170" height="48" rx="12" fill="#f4e7c9" stroke="#c5a766" stroke-width="1.4"/>
+        ${storyGraphText(storyGraphLines(group.label, 9), 0, '#5f4926', 12, 700)}
+      </g>
+    `).join('');
+    const evidenceNodes = items.map((item, index) => {
+      const submission = item.submission || {};
+      const selected = activeStoryEvidenceNodeId === item.id;
+      return `
+        <g data-story-evidence-node="${safeText(item.id)}" transform="translate(695 ${item.__storyGraphY})" role="button" tabindex="0" style="cursor:pointer">
+          <rect x="-130" y="-27" width="260" height="54" rx="13" fill="${selected ? '#173f40' : '#ffffff'}" stroke="${selected ? '#d9ad52' : '#b9cbc8'}" stroke-width="${selected ? 2.4 : 1.2}"/>
+          <circle cx="-106" cy="0" r="14" fill="${selected ? '#d9ad52' : '#eaf2f0'}"/>
+          <text x="-106" y="4" text-anchor="middle" fill="${selected ? '#173f40' : '#315c5c'}" font-size="10" font-weight="800">${index + 1}</text>
+          ${storyGraphText(storyGraphLines(submission.title || '社区文化记录', 13), 15, selected ? '#ffffff' : '#263c3a', 12, 700)}
+        </g>`;
+    }).join('');
+    const selectedItem = items.find((item) => item.id === activeStoryEvidenceNodeId) || items[0];
+    const selectedSubmission = selectedItem && selectedItem.submission || {};
+    return `
+      <div class="rounded-2xl border border-[#d8c6a7] bg-[#f6eedf] p-3 shadow-inner">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
+          <div>
+            <p class="text-[9px] font-black uppercase tracking-[0.18em] text-[#9b733b]">真实资料关系图</p>
+            <p class="mt-1 text-[10px] text-stone-500">中心资源 → 关系类型 → 已审核投稿；点击右侧节点查看依据</p>
+          </div>
+          <div class="flex gap-3 text-[9px] text-stone-500"><span>● 文化资源</span><span>■ 关系</span><span>□ 投稿</span></div>
+        </div>
+        <div class="overflow-x-auto rounded-xl border border-[#c5a766]/40 bg-[#173f40]">
+          <svg class="min-w-[840px] w-full" viewBox="0 0 850 ${graphHeight}" role="img" aria-label="${safeText(resource.title || '文化资源')}链迹思维导图">
+            <defs>
+              <pattern id="story-graph-pattern" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#d9ad52" stroke-width="0.45" opacity="0.08"/></pattern>
+            </defs>
+            <rect width="850" height="${graphHeight}" fill="#173f40"/>
+            <rect width="850" height="${graphHeight}" fill="url(#story-graph-pattern)"/>
+            ${relations}
+            <g transform="translate(115 ${rootY})">
+              <rect x="-75" y="-35" width="150" height="70" rx="18" fill="#8f302b" stroke="#e6c880" stroke-width="2"/>
+              ${storyGraphText(storyGraphLines(resource.title || '文化资源', 8), 0, '#fff4d6', 14, 800)}
+            </g>
+            ${groupNodes}
+            ${evidenceNodes}
+          </svg>
+        </div>
+        ${selectedItem ? `
+          <section class="mt-3 rounded-xl border border-[#d8c6a7] bg-white p-4">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div><p class="text-[9px] font-black tracking-[0.14em] text-[#9b733b]">${safeText(storyRelationLabel(selectedItem.relationType))}</p><h3 class="mt-1 font-bold text-stone-900">${safeText(selectedSubmission.title || '社区文化记录')}</h3></div>
+              <span class="rounded-full bg-emerald-50 px-2 py-1 text-[9px] font-bold text-emerald-700">已审核来源</span>
+            </div>
+            <p class="mt-3 text-xs leading-relaxed text-stone-600">${safeText(selectedItem.evidenceSummary)}</p>
+            <div class="mt-3 flex items-center justify-between border-t border-stone-100 pt-3 text-[10px] text-stone-400">
+              <span>记录者：${safeText(selectedSubmission.contributorName || '社区守护者')}</span>
+              <button type="button" data-story-open-timeline="${safeText(selectedItem.id)}" class="font-bold text-deepTeal">在时间线查看 →</button>
+            </div>
+          </section>` : ''}
+        ${(result.items || []).length > items.length ? `<p class="mt-2 text-center text-[9px] text-stone-500">图谱先展示前 ${items.length} 份资料，时间线保留全部内容。</p>` : ''}
+      </div>`;
+  }
+
+  function renderStoryEvidenceGraphV2(result) {
+    const items = (result.items || []).slice(0, 24);
+    const resource = result.resource || {};
+    const groups = [];
+    const groupMap = new Map();
+    items.forEach((item) => {
+      const key = item.relationType || 'supports_story';
+      if (!groupMap.has(key)) {
+        const group = { key, label: storyRelationLabel(key), items: [] };
+        groupMap.set(key, group);
+        groups.push(group);
+      }
+      groupMap.get(key).items.push(item);
+    });
+    const selectedItem = items.find((item) => item.id === activeStoryEvidenceNodeId) || items[0];
+    const selectedSubmission = selectedItem && selectedItem.submission || {};
+    let runningIndex = 0;
+    return `
+      <div class="space-y-4">
+        <section class="relative overflow-hidden rounded-2xl border border-[#b68a4a]/35 bg-gradient-to-br from-[#17110f] via-[#3c1b18] to-[#772a23] px-5 py-5 text-white shadow-sm">
+          <div class="absolute -right-8 -top-8 h-28 w-28 rounded-full border border-white/10"></div>
+          <div class="absolute -right-2 top-5 h-16 w-16 rounded-full border border-[#d9ad52]/20"></div>
+          <p class="text-[9px] font-black tracking-[0.2em] text-[#e3bd69]">链迹起点</p>
+          <h3 class="mt-2 text-lg font-black leading-snug">${safeText(resource.title || '湖北文化资源')}</h3>
+          <p class="mt-2 max-w-xl text-xs leading-relaxed text-white/70">${items.length} 份经过审核的社区记录，从不同角度补充这条文化线索。向下阅读即可看到它们为什么被串联在一起。</p>
+          <div class="mt-4 flex flex-wrap gap-2 text-[9px] font-bold">
+            ${groups.map((group) => `<span class="rounded-full border border-white/15 bg-white/10 px-3 py-1.5">${safeText(group.label)} · ${group.items.length}</span>`).join('')}
+          </div>
+        </section>
+
+        <div class="space-y-5">
+          ${groups.map((group) => `
+            <section class="relative pl-6 sm:pl-8">
+              <span class="absolute bottom-0 left-[7px] top-7 w-px bg-gradient-to-b from-[#c5a766] to-[#c5a766]/10"></span>
+              <span class="absolute left-0 top-1.5 h-4 w-4 rounded-full border-4 border-[#faf8f2] bg-[#b99855] shadow-sm"></span>
+              <header class="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-[9px] font-black tracking-[0.16em] text-[#9b733b]">关系 ${String(groups.indexOf(group) + 1).padStart(2, '0')}</p>
+                  <h4 class="mt-1 text-sm font-black text-stone-900">${safeText(group.label)}</h4>
+                </div>
+                <span class="rounded-full bg-stone-100 px-2.5 py-1 text-[9px] font-bold text-stone-500">${group.items.length} 份资料</span>
+              </header>
+              <div class="grid gap-3 sm:grid-cols-2">
+                ${group.items.map((item) => {
+                  runningIndex += 1;
+                  const submission = item.submission || {};
+                  const selected = selectedItem && selectedItem.id === item.id;
+                  return `
+                    <article data-story-evidence-node="${safeText(item.id)}" role="button" tabindex="0" class="group cursor-pointer rounded-2xl border ${selected ? 'border-[#b99855] bg-[#fffaf0] ring-2 ring-[#b99855]/15' : 'border-stone-200 bg-white hover:border-[#b99855]/60'} p-4 shadow-sm transition">
+                      <div class="flex items-start gap-3">
+                        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${selected ? 'bg-[#241a17] text-[#e3bd69]' : 'bg-[#f3e8d7] text-[#7d2b23]'} text-[10px] font-black">${runningIndex}</span>
+                        <div class="min-w-0 flex-1">
+                          <div class="flex items-start justify-between gap-2">
+                            <h5 class="text-xs font-black leading-5 text-stone-800">${safeText(submission.title || '社区文化记录')}</h5>
+                            <span class="shrink-0 rounded-full bg-emerald-50 px-2 py-1 text-[8px] font-bold text-emerald-700">已核实</span>
+                          </div>
+                          <p class="mt-2 line-clamp-3 text-[11px] leading-5 text-stone-500">${safeText(item.evidenceSummary || submission.description || '这份记录补充了该资源的一条可靠线索。')}</p>
+                          <p class="mt-3 border-t border-stone-100 pt-2 text-[9px] text-stone-400">${safeText(submission.contributorName || '社区记录者')}${submission.regionName ? ` · ${safeText(submission.regionName)}` : ''}</p>
+                        </div>
+                      </div>
+                    </article>`;
+                }).join('')}
+              </div>
+            </section>`).join('')}
+        </div>
+
+        ${selectedItem ? `
+          <section class="rounded-2xl border border-[#d8c6a7] bg-[#f7f1e5] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
+            <div>
+              <p class="text-[9px] font-black tracking-[0.14em] text-[#9b733b]">当前选中的原始记录</p>
+              <h4 class="mt-1 text-sm font-bold text-stone-900">${safeText(selectedSubmission.title || '社区文化记录')}</h4>
+              <p class="mt-1 text-[11px] leading-5 text-stone-500">${safeText(selectedItem.evidenceSummary)}</p>
+            </div>
+            <button type="button" data-story-open-timeline="${safeText(selectedItem.id)}" class="mt-3 min-h-11 shrink-0 rounded-xl bg-[#241a17] px-4 py-2.5 text-[10px] font-bold text-[#e3bd69] sm:mt-0">查看完整记录</button>
+          </section>` : ''}
+        ${(result.items || []).length > items.length ? `<p class="text-center text-[9px] text-stone-400">当前展示前 ${items.length} 份资料，完整内容保留在资料时间线中。</p>` : ''}
+      </div>`;
+  }
+
+  function renderStoryEvidenceTimeline(items) {
+    return `<div class="relative space-y-4 before:absolute before:bottom-5 before:left-[17px] before:top-5 before:w-px before:bg-sandGold/50">
+      ${items.map((item, index) => {
+        const submission = item.submission || {};
+        const date = submission.createdAt ? new Date(submission.createdAt).toLocaleDateString('zh-CN') : '记录时间待补充';
+        return `
+          <article id="story-timeline-${safeText(item.id)}" class="relative pl-11">
+            <span class="absolute left-0 top-4 z-[1] flex h-9 w-9 items-center justify-center rounded-full border-4 border-[#f3ebdd] bg-[#9e2f24] text-xs font-black text-[#fff5df]">${index + 1}</span>
+            <div class="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+              <div class="flex flex-wrap items-start justify-between gap-2"><div><p class="text-[9px] font-black uppercase tracking-[0.14em] text-sandGold">${safeText(storyRelationLabel(item.relationType))}</p><h3 class="mt-1 font-bold text-stone-900">${safeText(submission.title || '社区文化记录')}</h3></div><span class="rounded-full bg-stone-100 px-2 py-1 text-[9px] text-stone-500">${safeText(date)}</span></div>
+              <p class="mt-3 rounded-xl bg-stone-50 p-3 text-xs font-medium leading-relaxed text-stone-700">${safeText(item.evidenceSummary)}</p>
+              ${storyEvidenceMedia(submission)}
+              ${submission.description ? `<p class="mt-3 text-xs leading-relaxed text-stone-600">${safeText(submission.description)}</p>` : ''}
+              <p class="mt-3 border-t border-stone-100 pt-3 text-[10px] text-stone-400">记录者：${safeText(submission.contributorName || '社区守护者')}${submission.regionName ? ` · ${safeText(submission.regionName)}` : ''}</p>
+            </div>
+          </article>`;
+      }).join('')}
+    </div>`;
+  }
+
+  function renderPublishedStory(result) {
+    const story = result.story;
+    if (!story) return '<div class="rounded-2xl border border-dashed border-stone-300 bg-white p-6 text-sm text-stone-500">这处资源还没有已发布的故事版本。</div>';
+    const evidenceMap = new Map((result.items || []).map((item) => [item.id, item]));
+    const gapTasks = Array.isArray(result.gapTasks) ? result.gapTasks : [];
+    return `
+      <article class="overflow-hidden rounded-2xl border border-[#b68a4a]/30 bg-[#fffaf1] shadow-[0_14px_38px_rgba(58,31,23,0.09)]">
+        <header class="relative overflow-hidden bg-gradient-to-br from-[#17110f] via-[#401b18] to-[#762a23] px-5 py-6 text-white">
+          <span class="absolute -bottom-8 -right-3 cultural-font text-[7rem] font-black leading-none text-white/5">楚</span>
+          <p class="relative text-[9px] font-black uppercase tracking-[0.22em] text-[#d7b46e]">共同讲述 · 第 ${Number(story.version || 1)} 版</p>
+          <h3 class="cultural-font relative mt-2 text-xl font-black leading-tight text-[#fff5df]">${safeText(story.title)}</h3>
+          <p class="relative mt-3 text-xs leading-relaxed text-[#eadcca]/75">${safeText(story.introduction)}</p>
+          ${story.revisionSummary ? `<div class="relative mt-4 rounded-xl border border-[#d7b46e]/20 bg-white/10 px-3 py-2.5 text-[10px] leading-5 text-[#f1dfbf]"><strong class="text-[#d7b46e]">本版修订</strong> · ${safeText(story.revisionSummary)}</div>` : ''}
+        </header>
+        <div class="space-y-5 p-5">
+          ${(story.chapters || []).map((chapter, index) => {
+            const sources = (chapter.sourceLinkIds || []).map((id) => evidenceMap.get(id)).filter(Boolean);
+            return `
+              <section class="story-chapter-rail relative pl-10">
+                <span class="absolute left-0 top-0 z-[1] flex h-7 w-7 items-center justify-center rounded-full bg-[#9e2f24] text-xs font-black text-[#fff5df] shadow-[0_4px_10px_rgba(158,47,36,0.2)]">${index + 1}</span>
+                <h4 class="cultural-font font-bold text-[#2b2421]">${safeText(chapter.title)}</h4>
+                <p class="mt-2 text-sm leading-7 text-stone-700">${renderStoryBodyWithClaims(chapter.body, result.claims || [], index)}</p>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  ${sources.map((source) => `<button type="button" data-story-open-source="${safeText(source.id)}" class="min-h-9 rounded-full border border-[#b68a4a]/30 bg-[#f7edda] px-3 py-1 text-[10px] font-bold text-[#735322]">来源 · ${safeText(source.submission && source.submission.title || '社区资料')}</button>`).join('')}
+                </div>
+              </section>`;
+          }).join('')}
+          ${renderStoryTrail(result)}
+          ${story.closing ? `<footer class="rounded-xl bg-amber-50 p-4 text-xs leading-relaxed text-stone-700"><strong class="text-[#8f302b]">结语</strong><p class="mt-1">${safeText(story.closing)}</p></footer>` : ''}
+          ${gapTasks.length ? `<section class="overflow-hidden rounded-2xl border border-[#9e2f24]/25 bg-white">
+            <div class="border-b border-[#b68a4a]/20 bg-[#f8f0e2] px-4 py-3">
+              <p class="text-[9px] font-black uppercase tracking-[0.14em] text-[#9e2f24]">帮助补全这段链迹</p>
+              <p class="mt-1 text-[11px] leading-5 text-stone-600">任务由内容管理员发布。投稿通过审核并被采纳后，再由管理员确认积分。</p>
+            </div>
+            <div class="divide-y divide-stone-100">${gapTasks.map((task) => {
+              const typeLabel = { image: '照片', audio: '录音', video: '视频', any: '照片、录音或视频' }[task.requestedAssetType] || '资料';
+              const chapter = task.chapterIndex == null ? '整篇故事' : `第 ${Number(task.chapterIndex) + 1} 章`;
+              return `<article class="p-4 sm:flex sm:items-center sm:justify-between sm:gap-4">
+                <div class="min-w-0"><div class="flex flex-wrap gap-2"><span class="rounded-full bg-[#9e2f24]/8 px-2 py-1 text-[9px] font-bold text-[#8f302b]">${safeText(chapter)}</span><span class="rounded-full bg-stone-100 px-2 py-1 text-[9px] text-stone-500">征集${safeText(typeLabel)}</span></div><h4 class="mt-2 text-sm font-bold text-stone-900">${safeText(task.title)}</h4><p class="mt-1 text-[11px] leading-5 text-stone-600">${safeText(task.description)}</p>${Number(task.rewardPoints) > 0 ? `<p class="mt-2 text-[10px] font-bold text-[#8a6b32]">审核采纳后可获 ${Number(task.rewardPoints)} 积分 · 不自动发放</p>` : ''}</div>
+                <button type="button" data-story-gap-task="${safeText(task.id)}" class="mt-3 min-h-11 shrink-0 rounded-xl bg-[#241a17] px-4 text-xs font-bold text-[#e3bd69] sm:mt-0">带着任务去采集</button>
+              </article>`;
+            }).join('')}</div>
+          </section>` : ''}
+          <p class="border-t border-stone-100 pt-3 text-[9px] leading-relaxed text-stone-400">本故事由已确认链迹资料编排，并经管理员审核发布。点击每章来源可回到对应的原始社区记录。</p>
+          <section class="rounded-2xl border border-[#b68a4a]/25 bg-[#f8f0e2] p-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="text-[10px] font-black tracking-[0.08em] text-[#8f302b]">一起校准这段讲述</p>
+                <p class="mt-1 text-xs leading-relaxed text-[#66574c]">发现史实、来源或表述问题，可以直接指出具体章节。</p>
+              </div>
+              <button type="button" data-story-feedback-toggle class="min-h-11 rounded-full border border-[#9e2f24]/25 bg-white px-4 text-xs font-bold text-[#8f302b]">纠正或补充</button>
+            </div>
+            <form id="cloud-story-feedback-form" class="mt-4 hidden space-y-3 border-t border-[#b68a4a]/20 pt-4">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label class="text-[10px] font-bold text-stone-600">反馈类型
+                  <select id="cloud-story-feedback-kind" class="mt-1 min-h-11 w-full rounded-xl border border-[#b68a4a]/30 bg-white px-3 text-xs text-stone-700 outline-none focus:border-[#9e2f24] focus:ring-2 focus:ring-[#9e2f24]/10">
+                    <option value="content_error">内容可能有误</option>
+                    <option value="source_suggestion">可以补充来源</option>
+                    <option value="wording">表述可以更准确</option>
+                  </select>
+                </label>
+                <label class="text-[10px] font-bold text-stone-600">对应位置
+                  <select id="cloud-story-feedback-chapter" class="mt-1 min-h-11 w-full rounded-xl border border-[#b68a4a]/30 bg-white px-3 text-xs text-stone-700 outline-none focus:border-[#9e2f24] focus:ring-2 focus:ring-[#9e2f24]/10">
+                    <option value="-1">整篇故事</option>
+                    ${(story.chapters || []).map((chapter, index) => `<option value="${index}">第 ${index + 1} 章 · ${safeText(chapter.title)}</option>`).join('')}
+                  </select>
+                </label>
+              </div>
+              <label class="block text-[10px] font-bold text-stone-600">具体说明
+                <textarea id="cloud-story-feedback-content" rows="4" maxlength="1200" required placeholder="请写明哪里需要调整；如有书目、照片或口述来源，也可在这里说明。" class="mt-1 w-full resize-none rounded-xl border border-[#b68a4a]/30 bg-white p-3 text-sm leading-relaxed text-stone-700 outline-none focus:border-[#9e2f24] focus:ring-2 focus:ring-[#9e2f24]/10"></textarea>
+              </label>
+              <p class="text-[9px] leading-relaxed text-stone-400">需要上传照片、音频或视频时，请回到相关投稿，使用“补充这段链迹”。</p>
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <p id="cloud-story-feedback-message" class="min-h-4 text-[10px] text-[#9e2f24]"></p>
+                <button type="submit" class="min-h-11 rounded-xl bg-[#9e2f24] px-5 text-xs font-bold text-[#fff5df] disabled:opacity-50">提交给内容管理员</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </article>`;
+  }
+
+  function openStoryFeedbackForm() {
+    if (!isStableAccount(cloudUser)) {
+      openCloudLogin();
+      if (typeof showToast === 'function') showToast('登录后可以提交故事纠错', 'log-in');
+      return;
+    }
+    const form = document.getElementById('cloud-story-feedback-form');
+    if (!form) return;
+    form.classList.toggle('hidden');
+    if (!form.classList.contains('hidden')) document.getElementById('cloud-story-feedback-content')?.focus();
+  }
+
+  async function submitStoryFeedback(event) {
+    event.preventDefault();
+    if (storyFeedbackSubmitting || !activeStoryEvidenceResult || !activeStoryEvidenceResult.story) return;
+    const story = activeStoryEvidenceResult.story;
+    const resource = activeStoryEvidenceResult.resource || {};
+    const content = document.getElementById('cloud-story-feedback-content').value.trim();
+    const message = document.getElementById('cloud-story-feedback-message');
+    if (content.length < 5) {
+      message.textContent = '请至少填写 5 个字，方便管理员核对。';
+      return;
+    }
+    storyFeedbackSubmitting = true;
+    const button = event.currentTarget.querySelector('button[type="submit"]');
+    button.disabled = true;
+    message.textContent = '正在提交并绑定当前故事版本…';
+    try {
+      await callCore({
+        action: 'createFeedback',
+        type: 'story_correction',
+        content,
+        page: location.pathname || '/',
+        resourceId: resource.id,
+        storyId: story.id,
+        storyVersion: story.version,
+        chapterIndex: Number(document.getElementById('cloud-story-feedback-chapter').value),
+        correctionKind: document.getElementById('cloud-story-feedback-kind').value
+      });
+      event.currentTarget.innerHTML = '<div class="rounded-xl border border-[#6f7d5e]/25 bg-[#f2f4ec] p-4 text-xs leading-relaxed text-[#4f5f43]"><strong>已提交并记录当前故事版本。</strong><br>管理员处理后，回复会出现在个人中心；原始故事不会被自动改写。</div>';
+      refreshCloudProfile().catch(() => {});
+      if (typeof showToast === 'function') showToast('故事反馈已提交', 'check-circle');
+    } catch (error) {
+      message.textContent = error.message || '提交失败，请稍后重试。';
+      button.disabled = false;
+    } finally {
+      storyFeedbackSubmitting = false;
+    }
+  }
+
+  function bindStoryEvidenceControls() {
+    const content = document.getElementById('cloud-story-evidence-content');
+    if (!content) return;
+    content.querySelectorAll('[data-story-view]').forEach((button) => {
+      button.addEventListener('click', () => switchStoryEvidenceView(button.dataset.storyView));
+    });
+    content.querySelectorAll('[data-story-evidence-node]').forEach((node) => {
+      const select = () => {
+        activeStoryEvidenceNodeId = node.dataset.storyEvidenceNode;
+        renderStoryEvidence(activeStoryEvidenceResult);
+      };
+      node.addEventListener('click', select);
+      node.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') select();
+      });
+    });
+    content.querySelectorAll('[data-story-open-timeline]').forEach((timelineButton) => {
+      timelineButton.addEventListener('click', () => switchStoryEvidenceView('timeline', timelineButton.dataset.storyOpenTimeline));
+    });
+    content.querySelectorAll('[data-story-open-source]').forEach((sourceButton) => {
+      sourceButton.addEventListener('click', () => switchStoryEvidenceView('timeline', sourceButton.dataset.storyOpenSource));
+    });
+    content.querySelectorAll('[data-story-open-claim]').forEach((claimButton) => {
+      claimButton.addEventListener('click', () => openStoryClaimDrawer(claimButton.dataset.storyOpenClaim));
+    });
+    content.querySelectorAll('[data-story-trail-source]').forEach((trailButton) => {
+      trailButton.addEventListener('click', () => switchStoryEvidenceView('timeline', trailButton.dataset.storyTrailSource));
+    });
+    content.querySelector('[data-story-feedback-toggle]')?.addEventListener('click', openStoryFeedbackForm);
+    content.querySelectorAll('[data-story-gap-task]').forEach((button) => {
+      button.addEventListener('click', () => startStoryGapTask(button.dataset.storyGapTask));
+    });
+    content.querySelector('#cloud-story-feedback-form')?.addEventListener('submit', submitStoryFeedback);
+  }
+
+  function clearStoryGapTask() {
+    activeStoryGapTask = null;
+    const panel = document.getElementById('collect-gap-task-context');
+    if (panel) panel.classList.add('hidden');
+  }
+
+  function startStoryGapTask(taskId) {
+    const task = (activeStoryEvidenceResult && activeStoryEvidenceResult.gapTasks || []).find((item) => item.id === taskId);
+    if (!task) return;
+    activeStoryGapTask = { ...task };
+    closeStoryEvidence();
+    if (typeof switchTab === 'function') switchTab('collect');
+    const panel = document.getElementById('collect-gap-task-context');
+    if (panel) {
+      panel.classList.remove('hidden');
+      document.getElementById('collect-gap-task-title').textContent = task.title || '定向资料征集';
+      document.getElementById('collect-gap-task-description').textContent = task.description || '';
+      document.getElementById('collect-gap-task-reward').textContent = Number(task.rewardPoints) > 0
+        ? `审核通过并被管理员采纳后，可确认 ${Number(task.rewardPoints)} 积分。`
+        : '投稿仍需经过人工审核与采纳确认。';
+      panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    const description = document.getElementById('collect-description');
+    if (description && !description.value.trim()) description.value = `回应资料征集「${task.title}」：`;
+    if (typeof showToast === 'function') showToast('已带入征集任务，请按要求采集', 'clipboard-check');
+  }
+
+  function switchStoryEvidenceView(view, focusId) {
+    activeStoryEvidenceView = view === 'timeline' ? 'timeline' : view === 'story' ? 'story' : 'graph';
+    if (focusId) activeStoryEvidenceNodeId = focusId;
+    renderStoryEvidence(activeStoryEvidenceResult);
+    if (focusId && activeStoryEvidenceView === 'timeline') {
+      requestAnimationFrame(() => document.getElementById(`story-timeline-${focusId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    }
+  }
+
+  function renderStoryEvidence(result) {
+    const content = document.getElementById('cloud-story-evidence-content');
+    const items = result.items || [];
+    const resource = result.resource || {};
+    document.getElementById('cloud-story-evidence-title').textContent = resource.title || '链迹故事';
+    document.getElementById('cloud-story-evidence-subtitle').textContent = items.length
+      ? `${items.length} 份资料 · ${Number(result.contributorCount || 0)} 位记录者共同讲述`
+      : '等待社区共同补充的文化线索';
+    activeStoryEvidenceResult = result;
+    if (activeStoryEvidenceView === 'story' && !result.story) activeStoryEvidenceView = 'timeline';
+    if (!activeStoryEvidenceNodeId && items[0]) activeStoryEvidenceNodeId = items[0].id;
+    if (!items.length) {
+      content.innerHTML = `
+        <div class="rounded-2xl border border-dashed border-sandGold/60 bg-white p-7 text-center">
+          <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-amber-50 text-xl">链</div>
+          <h3 class="mt-3 font-bold text-stone-800">这条链迹还缺少第一份资料</h3>
+          <p class="mx-auto mt-2 max-w-md text-xs leading-relaxed text-stone-500">用户投稿审核通过后，管理员会把可靠资料关联到这里。你也可以拍摄现状、记录题刻或补充口述。</p>
+          <button type="button" onclick="closeStoryEvidence(); if (typeof switchTab === 'function') switchTab('collect')" class="mt-4 rounded-xl bg-deepTeal px-5 py-2.5 text-xs font-bold text-sandGold">补充一条线索</button>
+        </div>`;
+      return;
+    }
+    content.innerHTML = `
+      <div class="story-evidence-tabs mb-4 grid ${result.story ? 'grid-cols-3' : 'grid-cols-2'} gap-1 rounded-xl p-1">
+        ${result.story ? `<button type="button" data-story-view="story" class="story-evidence-tab ${activeStoryEvidenceView === 'story' ? 'is-active' : ''}">故事讲述</button>` : ''}
+        <button type="button" data-story-view="timeline" class="story-evidence-tab ${activeStoryEvidenceView === 'timeline' ? 'is-active' : ''}">来源记录</button>
+        <button type="button" data-story-view="graph" class="story-evidence-tab ${activeStoryEvidenceView === 'graph' ? 'is-active' : ''}">链迹图</button>
+      </div>
+      <div class="story-source-note rounded-2xl p-4">
+        <p class="text-[10px] font-black tracking-[0.08em] text-[#9e2f24]">资料来源说明</p>
+        <p class="mt-1 text-xs leading-relaxed text-[#66574c]">以下内容均来自已审核的社区投稿，并由管理员确认与“${safeText(resource.title)}”相关。原始记录保持不变，可继续补充和修订关系。</p>
+      </div>
+      <div class="mt-5">${activeStoryEvidenceView === 'graph' ? renderStoryEvidenceGraphV2(result) : activeStoryEvidenceView === 'timeline' ? renderStoryEvidenceTimeline(items) : renderPublishedStory(result)}</div>`;
+    bindStoryEvidenceControls();
+  }
+
+  async function openStoryEvidence(resourceId, resourceTitle, preferredView = 'story') {
+    injectStoryEvidenceModal();
+    const modal = document.getElementById('cloud-story-evidence-modal');
+    const content = document.getElementById('cloud-story-evidence-content');
+    document.getElementById('cloud-story-evidence-title').textContent = resourceTitle || '链迹故事';
+    document.getElementById('cloud-story-evidence-subtitle').textContent = '正在读取已审核资料来源';
+    content.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在整理资料来源...</div>';
+    modal.classList.remove('hidden');
+    activeStoryEvidenceView = preferredView === 'graph' ? 'graph' : preferredView === 'timeline' ? 'timeline' : 'story';
+    activeStoryEvidenceNodeId = '';
+    activeStoryEvidenceResult = null;
+    try {
+      await ensureCloudUser();
+      const result = await callCore({ action: 'getStoryEvidence', resourceId });
+      renderStoryEvidence(result);
+    } catch (error) {
+      content.innerHTML = `<div class="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">${safeText(error.message || '链迹资料暂时无法读取')}</div>`;
+    }
   }
 
   function closeCloudLogin() {
@@ -788,6 +1609,7 @@
       suggestion: '产品建议',
       bug: '功能异常',
       content: '内容问题',
+      story_correction: '故事纠错',
       other: '其他'
     }[type] || '其他';
   }
@@ -796,6 +1618,7 @@
     return {
       open: '处理中',
       resolved: '已回复',
+      accepted_for_revision: '已纳入修订',
       dismissed: '已关闭'
     }[status] || '处理中';
   }
@@ -809,6 +1632,7 @@
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
             <p class="text-xs font-bold text-stone-800">${safeText(feedbackTypeLabel(item.type))}</p>
+            ${item.storyContext ? `<p class="mt-1 text-[9px] font-bold text-[#8f302b]">${safeText(item.storyContext.resourceTitle || '链迹故事')} · 第 ${Number(item.storyContext.storyVersion || 1)} 版${item.storyContext.chapterTitle ? ` · ${safeText(item.storyContext.chapterTitle)}` : ''}</p>` : ''}
             <p class="mt-1 line-clamp-2 text-[10px] leading-relaxed text-stone-500">${safeText(item.content)}</p>
           </div>
           <span class="shrink-0 rounded-full bg-stone-100 px-2 py-1 text-[9px] font-bold text-stone-600">${safeText(feedbackStatusLabel(item.status))}</span>
@@ -859,6 +1683,228 @@
     }
   }
 
+  function redemptionStatusLabel(status) {
+    return {
+      issued: '待使用',
+      redeemed: '已核销',
+      expired: '已过期',
+      cancelled: '已取消'
+    }[status] || '待使用';
+  }
+
+  function redemptionStatusClass(status) {
+    return {
+      issued: 'bg-emerald-50 text-emerald-700',
+      redeemed: 'bg-stone-100 text-stone-500',
+      expired: 'bg-amber-50 text-amber-700',
+      cancelled: 'bg-red-50 text-red-600'
+    }[status] || 'bg-stone-100 text-stone-500';
+  }
+
+  function renderCloudRewards() {
+    const rewardList = document.getElementById('cloud-reward-list');
+    const redemptionList = document.getElementById('cloud-my-redemptions');
+    const redemptionCount = document.getElementById('cloud-redemption-count');
+    if (!rewardList || !latestBootstrap) return;
+    const rewards = latestBootstrap.rewards || [];
+    const points = Number(latestBootstrap.profile && latestBootstrap.profile.points || 0);
+    rewardList.innerHTML = rewards.length ? rewards.map((reward) => {
+      const soldOut = Number(reward.inventoryRemaining) <= 0;
+      const insufficient = points < Number(reward.pointsCost || 0);
+      return `
+        <article class="rounded-xl border border-stone-200 bg-white p-3 shadow-sm">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 items-start gap-2.5">
+              <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-sandGold/30 bg-sandGold/10 text-sm font-black text-deepTeal">${safeText(reward.icon || '礼')}</div>
+              <div class="min-w-0">
+                <h5 class="text-xs font-bold leading-relaxed text-stone-800">${safeText(reward.title)}</h5>
+                <p class="mt-0.5 text-[9px] text-stone-500">${safeText(reward.sponsor)}</p>
+                <p class="mt-1 line-clamp-2 text-[9px] leading-relaxed text-stone-400">${safeText(reward.description)}</p>
+              </div>
+            </div>
+            <button type="button" data-reward-id="${safeText(reward.id)}" ${soldOut ? 'disabled' : ''} class="shrink-0 rounded-lg px-3 py-2 text-[10px] font-bold ${soldOut ? 'cursor-not-allowed bg-stone-100 text-stone-400' : 'bg-deepTeal text-sandGold shadow'}">
+              ${soldOut ? '已领完' : `${Number(reward.pointsCost || 0)} 积分`}
+            </button>
+          </div>
+          <div class="mt-2 flex items-center justify-between border-t border-stone-100 pt-2 text-[9px]">
+            <span class="text-stone-400">剩余 ${Math.max(0, Number(reward.inventoryRemaining) || 0)} 份 · 兑换后 ${Number(reward.validDays) || 30} 天内有效</span>
+            ${!soldOut && insufficient ? '<span class="font-bold text-amber-600">积分暂不足</span>' : ''}
+          </div>
+        </article>
+      `;
+    }).join('') : '<div class="rounded-xl border border-stone-200 bg-white p-3 text-xs text-stone-500">暂无可兑换福利。</div>';
+    rewardList.querySelectorAll('[data-reward-id]').forEach((button) => {
+      button.addEventListener('click', () => openCloudReward(button.dataset.rewardId));
+    });
+
+    const redemptions = latestBootstrap.myRedemptions || [];
+    if (redemptionCount) redemptionCount.textContent = `${redemptions.length} 张`;
+    if (!redemptionList) return;
+    if (!isStableAccount(cloudUser)) {
+      redemptionList.innerHTML = '<button type="button" data-login-for-redemptions class="w-full rounded-xl border border-stone-200 bg-white p-3 text-left text-xs text-stone-500">登录正式账号后可查看和长期保存兑换凭证。</button>';
+      const login = redemptionList.querySelector('[data-login-for-redemptions]');
+      if (login) login.addEventListener('click', openCloudLogin);
+      return;
+    }
+    redemptionList.innerHTML = redemptions.length ? redemptions.map((item, index) => `
+      <article class="rounded-xl border border-stone-200 bg-white p-3">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <p class="text-xs font-bold text-stone-800">${safeText(item.rewardTitle)}</p>
+            <p class="mt-0.5 text-[9px] text-stone-400">${safeText(item.sponsor)}</p>
+          </div>
+          <span class="shrink-0 rounded-full px-2 py-1 text-[9px] font-bold ${redemptionStatusClass(item.status)}">${safeText(redemptionStatusLabel(item.status))}</span>
+        </div>
+        <div class="mt-2 flex items-center justify-between gap-2 rounded-lg bg-stone-50 px-2.5 py-2">
+          <code class="break-all text-[11px] font-black tracking-wide text-deepTeal">${safeText(item.code)}</code>
+          <div class="flex shrink-0 gap-1">
+            <button type="button" data-view-redemption="${index}" class="rounded-md bg-deepTeal px-2 py-1 text-[9px] font-bold text-sandGold shadow-sm">查看条码</button>
+            <button type="button" data-copy-redemption="${safeText(item.code)}" class="rounded-md bg-white px-2 py-1 text-[9px] font-bold text-deepTeal shadow-sm">复制</button>
+          </div>
+        </div>
+        <p class="mt-2 text-[9px] text-stone-400">有效期至 ${safeText(displayDate(item.expiresAt))} · 已扣 ${Number(item.pointsCost || 0)} 积分</p>
+      </article>
+    `).join('') : '<div class="rounded-xl border border-stone-200 bg-white p-3 text-xs text-stone-500">暂无兑换记录。</div>';
+    redemptionList.querySelectorAll('[data-copy-redemption]').forEach((button) => {
+      button.addEventListener('click', () => copyTextValue(button.dataset.copyRedemption));
+    });
+    redemptionList.querySelectorAll('[data-view-redemption]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const item = redemptions[Number(button.dataset.viewRedemption)];
+        if (item) showCloudRedemptionResult(item);
+      });
+    });
+    if (window.lucide) lucide.createIcons();
+  }
+
+  function openCloudReward(rewardId) {
+    if (!isStableAccount(cloudUser)) {
+      openCloudLogin();
+      if (typeof showToast === 'function') showToast('登录正式账号后才能兑换，以便长期保存凭证', 'log-in');
+      return;
+    }
+    const rewards = latestBootstrap && latestBootstrap.rewards || [];
+    activeReward = rewards.find((item) => item.id === rewardId) || null;
+    if (!activeReward) {
+      if (typeof showToast === 'function') showToast('该福利信息已更新，请刷新后重试', 'alert-circle');
+      return;
+    }
+    injectProductModals();
+    document.getElementById('cloud-reward-modal-title').textContent = activeReward.title || '确认兑换';
+    document.getElementById('cloud-reward-modal-sponsor').textContent = activeReward.sponsor || '';
+    document.getElementById('cloud-reward-modal-description').textContent = activeReward.description || '请兑换前确认使用说明。';
+    document.getElementById('cloud-reward-modal-cost').textContent = Number(activeReward.pointsCost || 0).toLocaleString();
+    document.getElementById('cloud-reward-modal-balance').textContent = Number(latestBootstrap.profile && latestBootstrap.profile.points || 0).toLocaleString();
+    document.getElementById('cloud-reward-message').textContent = '';
+    document.getElementById('cloud-reward-modal').classList.remove('hidden');
+  }
+
+  function createClientRequestId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function confirmCloudRewardRedemption() {
+    if (!activeReward || rewardRedeemPending) return;
+    const message = document.getElementById('cloud-reward-message');
+    const button = document.getElementById('cloud-reward-confirm');
+    rewardRedeemPending = true;
+    button.disabled = true;
+    button.textContent = '正在生成凭证…';
+    message.textContent = '';
+    try {
+      const result = await callCore({
+        action: 'redeemReward',
+        rewardId: activeReward.id,
+        clientRequestId: createClientRequestId()
+      });
+      document.getElementById('cloud-reward-modal').classList.add('hidden');
+      showCloudRedemptionResult(result.redemption);
+      await refreshCloudProfile();
+    } catch (error) {
+      message.textContent = error.message || '兑换失败，请稍后重试';
+    } finally {
+      rewardRedeemPending = false;
+      button.disabled = false;
+      button.textContent = '确认兑换';
+    }
+  }
+
+  function showCloudRedemptionResult(redemption) {
+    injectProductModals();
+    document.getElementById('cloud-redemption-result-title').textContent = redemption.rewardTitle || '反哺福利';
+    const code = String(redemption.code || '').toUpperCase();
+    document.getElementById('cloud-redemption-result-code').textContent = code;
+    renderCode39Barcode(document.getElementById('cloud-redemption-result-barcode'), code);
+    document.getElementById('cloud-redemption-result-expiry').textContent = `有效期至 ${displayDate(redemption.expiresAt)}`;
+    document.getElementById('cloud-redemption-result-instructions').textContent = redemption.redemptionInstructions || '请向商家出示兑换码。';
+    document.getElementById('cloud-redemption-result-modal').classList.remove('hidden');
+  }
+
+  const CODE39_PATTERNS = {
+    '0': 'nnnwwnwnn', '1': 'wnnwnnnnw', '2': 'nnwwnnnnw', '3': 'wnwwnnnnn',
+    '4': 'nnnwwnnnw', '5': 'wnnwwnnnn', '6': 'nnwwwnnnn', '7': 'nnnwnnwnw',
+    '8': 'wnnwnnwnn', '9': 'nnwwnnwnn', 'A': 'wnnnnwnnw', 'B': 'nnwnnwnnw',
+    'C': 'wnwnnwnnn', 'D': 'nnnnwwnnw', 'E': 'wnnnwwnnn', 'F': 'nnwnwwnnn',
+    'G': 'nnnnnwwnw', 'H': 'wnnnnwwnn', 'I': 'nnwnnwwnn', 'J': 'nnnnwwwnn',
+    'K': 'wnnnnnnww', 'L': 'nnwnnnnww', 'M': 'wnwnnnnwn', 'N': 'nnnnwnnww',
+    'O': 'wnnnwnnwn', 'P': 'nnwnwnnwn', 'Q': 'nnnnnnwww', 'R': 'wnnnnnwwn',
+    'S': 'nnwnnnwwn', 'T': 'nnnnwnwwn', 'U': 'wwnnnnnnw', 'V': 'nwwnnnnnw',
+    'W': 'wwwnnnnnn', 'X': 'nwnnwnnnw', 'Y': 'wwnnwnnnn', 'Z': 'nwwnwnnnn',
+    '-': 'nwnnnnwnw', '.': 'wwnnnnwnn', ' ': 'nwwnnnwnn', '$': 'nwnwnwnnn',
+    '/': 'nwnwnnnwn', '+': 'nwnnnwnwn', '%': 'nnnwnwnwn', '*': 'nwnnwnwnn'
+  };
+
+  function renderCode39Barcode(container, rawValue) {
+    if (!container) return;
+    const value = String(rawValue || '').toUpperCase().split('').filter((character) => CODE39_PATTERNS[character]).join('');
+    if (!value) {
+      container.innerHTML = '<p class="py-6 text-[10px] text-stone-400">暂无可生成的兑换码</p>';
+      return;
+    }
+    const narrow = 2;
+    const wide = 5;
+    const gap = 2;
+    const quiet = 14;
+    let x = quiet;
+    const bars = [];
+    `*${value}*`.split('').forEach((character) => {
+      CODE39_PATTERNS[character].split('').forEach((kind, index) => {
+        const width = kind === 'w' ? wide : narrow;
+        if (index % 2 === 0) bars.push(`<rect x="${x}" y="7" width="${width}" height="56" rx="0.35"/>`);
+        x += width;
+      });
+      x += gap;
+    });
+    const width = x + quiet - gap;
+    container.innerHTML = `<svg viewBox="0 0 ${width} 70" width="100%" height="70" preserveAspectRatio="none" role="img" aria-label="Code 39 条形码"><rect width="${width}" height="70" fill="#fff"/><g fill="#172f30">${bars.join('')}</g></svg>`;
+  }
+
+  async function copyTextValue(value) {
+    const text = String(value || '');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (_) {
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      input.remove();
+    }
+    if (typeof showToast === 'function') showToast('兑换码已复制', 'copy');
+  }
+
+  function copyActiveRedemptionCode() {
+    const code = document.getElementById('cloud-redemption-result-code');
+    return copyTextValue(code && code.textContent);
+  }
+
   function renderCloudSubmissionRecords() {
     const list = document.getElementById('cloud-my-submissions');
     if (!list || !latestBootstrap) return;
@@ -889,6 +1935,7 @@
         <div class="mt-2 flex flex-wrap gap-1.5 text-[9px]">
           <span class="rounded-full bg-stone-100 px-2 py-0.5 text-stone-600">${safeText(reviewStageLabel(item.aiReviewStatus))}</span>
           <span class="rounded-full bg-stone-100 px-2 py-0.5 text-stone-600">审核编号 ${safeText(item.id)}</span>
+          ${item.gapTaskId ? `<span class="rounded-full bg-amber-50 px-2 py-0.5 font-bold text-amber-800">定向征集 · ${safeText(item.gapTaskTitle || '共同补全')}</span>` : ''}
         </div>
         ${item.reviewNote ? `<p class="mt-2 rounded-lg bg-stone-50 p-2 text-[10px] text-stone-600">审核意见：${safeText(item.reviewNote)}</p>` : ''}
         ${item.status === 'approved' ? `<p class="mt-2 text-[10px] font-bold text-emerald-600">已发放 +${Number(item.rewardPoints || 100)} 流光积分</p>` : ''}
@@ -896,6 +1943,22 @@
     `).join('') : `<div class="rounded-xl border border-stone-200 bg-white p-3 text-xs text-stone-500">${
       allItems.length ? '当前筛选条件下没有投稿。' : '还没有云端上传记录。'
     }</div>`;
+  }
+
+  function renderCloudContributionImpact(data) {
+    const impact = data.contributionImpact || {};
+    const items = Array.isArray(impact.items) ? impact.items : [];
+    const adopted = document.getElementById('cloud-impact-adopted');
+    const stories = document.getElementById('cloud-impact-stories');
+    const points = document.getElementById('cloud-impact-points');
+    const recent = document.getElementById('cloud-impact-recent');
+    if (!adopted || !stories || !points || !recent) return;
+    adopted.textContent = Number(impact.adoptedCount || 0);
+    stories.textContent = Number(impact.storyCount || 0);
+    points.textContent = `+${Number(impact.totalRewardPoints || 0)}`;
+    recent.innerHTML = items.length
+      ? `<details class="rounded-xl border border-[#b68a4a]/20 bg-white px-3 py-2"><summary class="cursor-pointer text-[10px] font-bold text-[#7d2b23]">查看最近采用记录</summary><div class="mt-2 space-y-2">${items.slice(0, 4).map((item) => `<article class="border-t border-stone-100 pt-2 first:border-0 first:pt-0"><p class="text-[10px] font-bold text-stone-700">${safeText(item.storyTitle || item.taskTitle || '楚韵故事')}</p><p class="mt-0.5 text-[9px] text-stone-400">${safeText(item.taskTitle || '资料补充')}${item.rewardStatus === 'awarded' ? ` · 已获 +${Number(item.rewardPointsAwarded || 0)} 积分` : item.rewardStatus === 'pending_manual_confirmation' ? ' · 积分待管理员确认' : ''}</p></article>`).join('')}</div></details>`
+      : '<p class="text-[10px] leading-5 text-stone-400">资料被故事采用后，贡献记录会出现在这里。</p>';
   }
 
   function renderCloudProfile(data) {
@@ -929,7 +1992,10 @@
     if (legacyPoints) legacyPoints.textContent = Number(profile.points || 0).toLocaleString();
     try { userPoints = Number(profile.points || 0); } catch (_) {}
     renderCloudSubmissionRecords();
+    renderCloudContributionImpact(data);
     renderCloudFeedback();
+renderCloudRewards();
+    updateNotificationEntry();
   }
 
   async function refreshCloudProfile() {
@@ -937,9 +2003,348 @@
     bootstrapPromise = callCore({ action: 'bootstrap' });
     try {
       renderCloudProfile(await bootstrapPromise);
+      await loadCloudNotifications();
     } catch (error) {
       const list = document.getElementById('cloud-my-submissions');
       if (list) list.innerHTML = `<div class="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">${safeText(error.message)}</div>`;
+    }
+  }
+
+  function resourceAliasId(resource, type) {
+    const aliases = Array.isArray(resource && resource.legacyAliases)
+      ? resource.legacyAliases
+      : [];
+    const alias = aliases.find((item) => item && item.type === type && item.id);
+    return alias ? String(alias.id) : '';
+  }
+
+  function resourceRegionText(region, separator = ' · ') {
+    if (!region || typeof region !== 'object') return '';
+    return [region.city, region.district]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(separator);
+  }
+
+  function resourceCollectableText(value) {
+    if (typeof value === 'string') return value.trim();
+    if (!value || typeof value !== 'object') return '';
+    return String(value.title || value.name || value.label || value.description || '').trim();
+  }
+
+  function unifiedResourceTypeText(type) {
+    return {
+      landmark: '文化点位',
+      hotspot: '守护热点',
+      activity: '社区活动',
+      article: '文化导读',
+      experience: '文化体验',
+      route: '游览路线'
+    }[type] || '文化资源';
+  }
+
+  function injectUnifiedResourceDetailModal() {
+    if (document.getElementById('cloud-resource-detail-modal')) return;
+    document.body.insertAdjacentHTML('beforeend', `
+      <div id="cloud-resource-detail-modal" class="hidden fixed inset-0 z-[94] flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-4">
+        <section class="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-[#f3ebdd] shadow-2xl sm:rounded-3xl">
+          <header class="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-white/10 bg-gradient-to-br from-[#17110f] via-[#351815] to-[#6c2721] px-5 py-4 text-white">
+            <div class="min-w-0">
+              <p id="cloud-resource-detail-kicker" class="text-[9px] font-black tracking-[0.22em] text-[#d7b46e]">统一文化资源</p>
+              <h2 id="cloud-resource-detail-title" class="cultural-font mt-1 text-lg font-black leading-tight text-[#fff5df]">资源详情</h2>
+              <p id="cloud-resource-detail-region" class="mt-1 text-[10px] text-[#eadcca]/70"></p>
+            </div>
+            <button type="button" data-close-resource-detail class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/10 text-[#fff5df]" aria-label="关闭资源详情">✕</button>
+          </header>
+          <div id="cloud-resource-detail-content" class="p-4 sm:p-5">
+            <div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在整理资源内容…</div>
+          </div>
+        </section>
+      </div>`);
+    document.querySelectorAll('[data-close-resource-detail]').forEach((button) => button.addEventListener('click', closeUnifiedResourceDetail));
+    document.getElementById('cloud-resource-detail-modal').addEventListener('click', (event) => {
+      if (event.target.id === 'cloud-resource-detail-modal') closeUnifiedResourceDetail();
+    });
+  }
+
+  function closeUnifiedResourceDetail() {
+    document.getElementById('cloud-resource-detail-modal')?.classList.add('hidden');
+    activeUnifiedResourceDetail = null;
+  }
+
+  function unifiedResourceLegacyContent(resource) {
+    const contentId = resourceAliasId(resource, 'content');
+    if (!contentId || typeof getDiscoverFeedItemById !== 'function') return null;
+    return getDiscoverFeedItemById(contentId);
+  }
+
+  function unifiedResourceVisitDetail(resource) {
+    const landmarkId = resourceAliasId(resource, 'landmark') || String(resource.id || '');
+    if (typeof mapPlannerDetails !== 'undefined' && mapPlannerDetails[landmarkId]) return mapPlannerDetails[landmarkId];
+    const transport = resource.transport && typeof resource.transport === 'object' ? resource.transport : {};
+    const access = Array.isArray(transport.modes) ? transport.modes.map(resourceCollectableText).filter(Boolean) : [];
+    const collect = Array.isArray(resource.collectables) ? resource.collectables.map(resourceCollectableText).filter(Boolean) : [];
+    if (!access.length && !collect.length) return null;
+    return { area: resourceRegionText(resource.region), access, collect, arrival: '' };
+  }
+
+  function unifiedResourceRoutePlan(resource) {
+    const routeId = resourceAliasId(resource, 'activity') || String(resource.id || '');
+    if (typeof communityRoutePlans === 'undefined' || !Array.isArray(communityRoutePlans)) return null;
+    return communityRoutePlans.find((item) => item.id === routeId) || null;
+  }
+
+  function renderUnifiedResourceDetail(resource) {
+    const content = document.getElementById('cloud-resource-detail-content');
+    if (!content) return;
+    const legacyContent = unifiedResourceLegacyContent(resource);
+    const visit = unifiedResourceVisitDetail(resource);
+    const route = unifiedResourceRoutePlan(resource);
+    const region = resourceRegionText(resource.region) || '湖北';
+    const access = visit && Array.isArray(visit.access) ? visit.access.filter(Boolean) : [];
+    const collect = visit && Array.isArray(visit.collect) ? visit.collect.filter(Boolean) : [];
+    const routeSteps = route && Array.isArray(route.steps) ? route.steps : [];
+    const completeness = Math.max(0, Math.min(100, Number(resource.completeness) || 0));
+    document.getElementById('cloud-resource-detail-kicker').textContent = `统一文化资源 · ${unifiedResourceTypeText(resource.type)}`;
+    document.getElementById('cloud-resource-detail-title').textContent = resource.title || '资源详情';
+    document.getElementById('cloud-resource-detail-region').textContent = `${region}${completeness ? ` · 资料完整度 ${completeness}%` : ''}`;
+    content.innerHTML = `
+      <article class="overflow-hidden rounded-2xl border border-[#b68a4a]/25 bg-[#fffaf1] shadow-[0_14px_38px_rgba(58,31,23,0.08)]">
+        <div class="border-l-4 border-[#9e2f24] p-5">
+          <p class="text-[9px] font-black tracking-[0.16em] text-[#9e2f24]">文化导读</p>
+          <p class="cultural-font mt-2 text-base font-bold leading-7 text-[#2b2421]">${safeText(resource.summary || '这项文化资源正在由社区持续补充。')}</p>
+          ${legacyContent && legacyContent.researchValue ? `<p class="mt-3 text-xs leading-6 text-stone-600">${safeText(legacyContent.researchValue)}</p>` : ''}
+        </div>
+      </article>
+      <button type="button" data-resource-story class="mt-4 flex min-h-11 w-full items-center justify-between rounded-2xl bg-[#241a17] px-4 text-left text-[#fff5df] shadow-[0_8px_24px_rgba(36,26,23,0.14)]">
+        <span><span class="block text-xs font-bold">阅读共同故事</span><span class="mt-0.5 block text-[9px] text-[#d7b46e]">先读已审核讲述，再按需查看来源和链迹图</span></span>
+        <span class="text-lg text-[#d7b46e]">›</span>
+      </button>
+      ${visit ? `
+        <details class="mt-4 overflow-hidden rounded-2xl border border-[#b68a4a]/25 bg-white">
+          <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between px-4 py-3 text-xs font-bold text-[#2b2421]">到访与采集提示<span class="text-[#9e2f24]">展开</span></summary>
+          <div class="space-y-4 border-t border-stone-100 px-4 py-4 text-xs leading-relaxed text-stone-600">
+            ${visit.stay ? `<p><strong class="text-stone-800">建议停留：</strong>${safeText(visit.stay)}</p>` : ''}
+            ${visit.arrival ? `<p><strong class="text-stone-800">现场提示：</strong>${safeText(visit.arrival)}</p>` : ''}
+            ${access.length ? `<div><p class="font-bold text-stone-800">到达方式</p><div class="mt-2 flex flex-wrap gap-2">${access.map((item) => `<span class="rounded-full bg-[#f3ebdd] px-3 py-1.5 text-[10px]">${safeText(item)}</span>`).join('')}</div></div>` : ''}
+            ${collect.length ? `<div><p class="font-bold text-stone-800">适合补充</p><ul class="mt-2 space-y-2">${collect.map((item) => `<li class="flex gap-2"><span class="text-[#9e2f24]">◆</span><span>${safeText(item)}</span></li>`).join('')}</ul></div>` : ''}
+          </div>
+        </details>` : ''}
+      ${routeSteps.length ? `
+        <details class="mt-4 overflow-hidden rounded-2xl border border-[#b68a4a]/25 bg-white">
+          <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between px-4 py-3 text-xs font-bold text-[#2b2421]">路线步骤 · ${routeSteps.length} 站<span class="text-[#9e2f24]">展开</span></summary>
+          <div class="border-t border-stone-100 px-4 py-4">
+            <ol class="space-y-4">${routeSteps.map((step, index) => `<li class="relative pl-10"><span class="absolute left-0 top-0 flex h-7 w-7 items-center justify-center rounded-full bg-[#9e2f24] text-[10px] font-black text-[#fff5df]">${index + 1}</span><p class="text-xs font-bold text-stone-800">${safeText(step.title || `第 ${index + 1} 站`)}</p><p class="mt-1 text-[10px] leading-relaxed text-stone-500">${safeText(step.guide || step.desc || '')}</p>${step.stay ? `<p class="mt-1 text-[9px] font-bold text-[#8b672d]">${safeText(step.stay)}</p>` : ''}</li>`).join('')}</ol>
+          </div>
+        </details>` : ''}
+      <div class="mt-4 grid gap-2 sm:grid-cols-2">
+        ${resourceAliasId(resource, 'landmark') ? '<button type="button" data-resource-map class="min-h-11 rounded-xl border border-[#9e2f24]/20 bg-white px-4 text-xs font-bold text-[#8f302b]">在地图中查看</button>' : ''}
+        ${resourceAliasId(resource, 'content') ? '<button type="button" data-resource-legacy-content class="min-h-11 rounded-xl border border-[#b68a4a]/30 bg-white px-4 text-xs font-bold text-[#735322]">查看关联投稿</button>' : ''}
+        ${resourceAliasId(resource, 'activity') ? '<button type="button" data-resource-route class="min-h-11 rounded-xl border border-[#9e2f24]/20 bg-white px-4 text-xs font-bold text-[#8f302b]">在地图规划路线</button>' : ''}
+      </div>
+      <p class="mt-4 text-center text-[9px] leading-relaxed text-stone-400">开放时间、票务和道路状态可能变化，请以场馆及地图服务当天信息为准。</p>`;
+    content.querySelector('[data-resource-story]')?.addEventListener('click', () => {
+      closeUnifiedResourceDetail();
+      window.openStoryEvidence?.(resource.id, resource.title, 'story');
+    });
+    content.querySelector('[data-resource-map]')?.addEventListener('click', () => {
+      const landmarkId = resourceAliasId(resource, 'landmark');
+      const landmark = typeof heritageLandmarks !== 'undefined' ? heritageLandmarks.find((item) => item.id === landmarkId) : null;
+      closeUnifiedResourceDetail();
+      if (landmark && typeof switchTab === 'function') {
+        switchTab('map');
+        setTimeout(() => { focusLandmark(landmark); selectMapPlannerPoint(landmark.id, { focusMap: true }); }, 120);
+      }
+    });
+    content.querySelector('[data-resource-legacy-content]')?.addEventListener('click', () => {
+      const contentId = resourceAliasId(resource, 'content');
+      closeUnifiedResourceDetail();
+      if (contentId && typeof openDiscoverDetail === 'function') setTimeout(() => openDiscoverDetail(contentId), 0);
+    });
+    content.querySelector('[data-resource-route]')?.addEventListener('click', () => {
+      const routeId = resourceAliasId(resource, 'activity');
+      closeUnifiedResourceDetail();
+      if (routeId && typeof openActivityRoutesOnMap === 'function') openActivityRoutesOnMap(routeId);
+    });
+  }
+
+  async function openUnifiedResourceDetail(resourceId) {
+    injectUnifiedResourceDetailModal();
+    const fallback = unifiedResources.find((item) => item.id === resourceId) || null;
+    const modal = document.getElementById('cloud-resource-detail-modal');
+    const content = document.getElementById('cloud-resource-detail-content');
+    modal.classList.remove('hidden');
+    document.getElementById('cloud-resource-detail-title').textContent = fallback && fallback.title || '资源详情';
+    document.getElementById('cloud-resource-detail-region').textContent = '正在读取统一资源内容';
+    content.innerHTML = '<div class="rounded-2xl border border-stone-200 bg-white p-6 text-sm text-stone-500">正在整理资源内容…</div>';
+    try {
+      const result = await callCore({ action: 'getResourceDetail', resourceId });
+      activeUnifiedResourceDetail = result && result.item || fallback;
+      if (!activeUnifiedResourceDetail) throw new Error('没有找到这项文化资源');
+      renderUnifiedResourceDetail(activeUnifiedResourceDetail);
+    } catch (error) {
+      if (fallback) {
+        activeUnifiedResourceDetail = fallback;
+        renderUnifiedResourceDetail(fallback);
+        return;
+      }
+      content.innerHTML = `<div class="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">${safeText(error.message || '资源详情暂时无法读取')}</div>`;
+    }
+  }
+
+  function setUnifiedResourceSyncState(status, count = 0, error = '') {
+    unifiedResourceSyncState = {
+      status,
+      count: Number(count || 0),
+      error: String(error || ''),
+      updatedAt: new Date().toISOString()
+    };
+    window.chulinkResources = unifiedResources;
+    window.chulinkResourceSync = { ...unifiedResourceSyncState };
+
+    const statusElement = document.getElementById('resource-sync-status');
+    if (!statusElement) return;
+    if (status === 'ready' && count > 0) {
+      statusElement.textContent = `${count} 项云端资源已同步`;
+      statusElement.className = 'text-[9px] font-bold text-emerald-700';
+      return;
+    }
+    statusElement.textContent = '本地数据可用';
+    statusElement.className = 'text-[9px] text-stone-400';
+  }
+
+  function attachResourceMetadata(target, resource) {
+    if (!target || !resource) return;
+    target.resourceId = String(resource.id || '');
+    target.resourceType = String(resource.type || '');
+    target.categoryIds = Array.isArray(resource.categoryIds) ? resource.categoryIds.slice() : [];
+    target.tags = Array.isArray(resource.tags) ? resource.tags.slice() : [];
+    target.capabilities = resource.capabilities && typeof resource.capabilities === 'object'
+      ? { ...resource.capabilities }
+      : {};
+    target.relatedResourceIds = Array.isArray(resource.relatedResourceIds)
+      ? resource.relatedResourceIds.slice()
+      : [];
+    target.resourceCompleteness = Number(resource.completeness || 0);
+  }
+
+  function mergeLandmarkResource(resource) {
+    if (typeof heritageLandmarks === 'undefined' || !Array.isArray(heritageLandmarks)) return;
+    const landmarkId = resourceAliasId(resource, 'landmark');
+    if (!landmarkId) return;
+    const landmark = heritageLandmarks.find((item) => item.id === landmarkId);
+    if (!landmark) return;
+
+    if (resource.title) landmark.title = resource.title;
+    if (resource.summary) landmark.desc = resource.summary;
+    if (resource.location) {
+      const latitude = Number(resource.location.latitude);
+      const longitude = Number(resource.location.longitude);
+      if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+        landmark.coords = [latitude, longitude];
+        landmark.coordinateSystem = resource.location.coordinateSystem || 'gcj02';
+      }
+    }
+    attachResourceMetadata(landmark, resource);
+
+    if (typeof mapPlannerDetails === 'undefined') return;
+    const currentDetail = mapPlannerDetails[landmarkId] || {};
+    const area = resourceRegionText(resource.region);
+    const transport = resource.transport && typeof resource.transport === 'object'
+      ? resource.transport
+      : {};
+    const transportModes = Array.isArray(transport.modes)
+      ? transport.modes.map(resourceCollectableText).filter(Boolean)
+      : [];
+    const access = transportModes.length
+      ? transportModes
+      : (Array.isArray(transport.access) ? transport.access.map(resourceCollectableText).filter(Boolean) : []);
+    const collect = Array.isArray(resource.collectables)
+      ? resource.collectables.map(resourceCollectableText).filter(Boolean)
+      : [];
+    mapPlannerDetails[landmarkId] = {
+      ...currentDetail,
+      ...(area ? { area } : {}),
+      ...(access.length ? { access } : {}),
+      ...(collect.length ? { collect } : {})
+    };
+  }
+
+  function mergeContentResource(resource) {
+    const contentId = resourceAliasId(resource, 'content');
+    if (!contentId) return;
+    const collections = [];
+    if (typeof discoverLiveFeedItems !== 'undefined' && Array.isArray(discoverLiveFeedItems)) {
+      collections.push(discoverLiveFeedItems);
+    }
+    if (typeof discoverLiveCandidates !== 'undefined' && Array.isArray(discoverLiveCandidates)) {
+      collections.push(discoverLiveCandidates);
+    }
+    const item = collections.flat().find((candidate) => candidate.id === contentId);
+    if (!item) return;
+    if (resource.title) item.title = resource.title;
+    if (resource.summary) item.description = resource.summary;
+    const region = resourceRegionText(resource.region, '');
+    if (region) item.region = region;
+    attachResourceMetadata(item, resource);
+  }
+
+  function mergeRouteResource(resource) {
+    if (typeof communityRoutePlans === 'undefined' || !Array.isArray(communityRoutePlans)) return;
+    const routeId = resourceAliasId(resource, 'activity');
+    if (!routeId) return;
+    const route = communityRoutePlans.find((item) => item.id === routeId);
+    if (!route) return;
+    if (resource.title) route.title = resource.title;
+    if (resource.summary) route.desc = resource.summary;
+    if (resource.region && resource.region.city) route.city = String(resource.region.city);
+    if (resource.location) {
+      const latitude = Number(resource.location.latitude);
+      const longitude = Number(resource.location.longitude);
+      if (Number.isFinite(latitude) && Number.isFinite(longitude)) route.center = [latitude, longitude];
+    }
+    attachResourceMetadata(route, resource);
+  }
+
+  function applyUnifiedResources(items) {
+    unifiedResources = Array.isArray(items) ? items.filter((item) => item && item.id) : [];
+    unifiedResources.forEach((resource) => {
+      mergeLandmarkResource(resource);
+      mergeContentResource(resource);
+      mergeRouteResource(resource);
+    });
+    setUnifiedResourceSyncState('ready', unifiedResources.length);
+    if (typeof refreshUnifiedResourceUi === 'function') refreshUnifiedResourceUi();
+  }
+
+  async function loadUnifiedResources() {
+    setUnifiedResourceSyncState('loading');
+    try {
+      const result = await callCore({ action: 'getResources', limit: 100 });
+      applyUnifiedResources(result && result.items);
+    } catch (error) {
+      unifiedResources = [];
+      setUnifiedResourceSyncState('fallback', 0, error && error.message);
+      console.warn('[CloudBase resources] 使用本地兼容数据', error);
+    }
+  }
+
+  async function loadUnifiedRelatedResources(itemId) {
+    const item = typeof getDiscoverFeedItemById === 'function'
+      ? getDiscoverFeedItemById(itemId)
+      : null;
+    const resourceId = String(item && item.resourceId || '');
+    if (!resourceId || typeof renderDiscoverRelatedResources !== 'function') return;
+    const requestId = ++unifiedRelatedRequestId;
+    renderDiscoverRelatedResources(resourceId, [], { loading: true });
+    try {
+      const result = await callCore({ action: 'searchResources', resourceId, limit: 4 });
+      if (requestId !== unifiedRelatedRequestId) return;
+      renderDiscoverRelatedResources(resourceId, result && result.items || []);
+    } catch (error) {
+      if (requestId !== unifiedRelatedRequestId) return;
+      renderDiscoverRelatedResources(resourceId, [], { error: true });
+      console.warn('[CloudBase related resources]', error);
     }
   }
 
@@ -983,6 +2388,49 @@
     ) || null;
   }
 
+  const DISCUSSABLE_DISCOVER_CONTENT_IDS = new Set([
+    'share-yellow-crane-tower',
+    'share-wudang-ancient-buildings',
+    'share-mingxianling',
+    'share-hubei-museum-bells',
+    'share-jingzhou-city-wall',
+    'live-new-jingzhou-inscription',
+    'live-new-enshi-door',
+    'live-new-wudang-stone',
+    'live-new-suizhou-pattern'
+  ]);
+
+  function setDiscoverDiscussionEntryAvailable(available) {
+    const entry = document.getElementById('cloud-discover-discussion-entry');
+    if (entry) entry.classList.toggle('hidden', !available);
+  }
+
+  function normalizeInteractionTarget(value) {
+    if (value && typeof value === 'object' && value.targetType && value.targetId) {
+      return {
+        targetType: String(value.targetType),
+        targetId: rawSubmissionId(value.targetId),
+        targetTitle: String(value.targetTitle || value.title || '内容讨论')
+      };
+    }
+    const item = typeof value === 'string' ? findApprovedItem(value) : value;
+    if (!item || !String(item.feedId || item.id || '').startsWith('approved-')) return null;
+    return {
+      targetType: 'submission',
+      targetId: rawSubmissionId(item.id || item.feedId),
+      targetTitle: String(item.title || '社区投稿')
+    };
+  }
+
+  function interactionPayload(target) {
+    const payload = {
+      targetType: target.targetType,
+      targetId: target.targetId
+    };
+    if (target.targetType === 'submission') payload.submissionId = target.targetId;
+    return payload;
+  }
+
   async function requireInteractiveAccount() {
     const user = await ensureCloudUser();
     if (!isStableAccount(user)) {
@@ -1013,13 +2461,17 @@
 
   function renderCloudComments(result) {
     const panel = document.getElementById('cloud-interaction-panel');
+    const title = document.getElementById('cloud-interaction-title');
     const summary = document.getElementById('cloud-interaction-summary');
     const list = document.getElementById('cloud-comment-list');
     const likeUsers = document.getElementById('cloud-like-users');
     const loadMore = document.getElementById('cloud-comment-load-more');
     if (!panel || !summary || !list) return;
     panel.classList.remove('hidden');
-    summary.textContent = `${Number(result.likeCount || 0)} 个赞 · ${Number(result.commentCount || 0)} 条评论`;
+    if (title) title.textContent = result.targetTitle || (activeInteractionTarget && activeInteractionTarget.targetTitle) || '内容讨论';
+    summary.textContent = result.targetType === 'submission'
+      ? `${Number(result.likeCount || 0)} 个赞 · ${Number(result.commentCount || 0)} 条评论`
+      : `${Number(result.commentCount || 0)} 条评论 · 登录后可参与交流`;
     const likers = result.likers || [];
     if (likeUsers) {
       likeUsers.classList.toggle('hidden', !likers.length);
@@ -1051,13 +2503,14 @@
 
   async function loadCloudInteractions(itemOrId, options = {}) {
     const append = options.append === true;
-    const item = typeof itemOrId === 'string' ? findApprovedItem(itemOrId) : itemOrId;
+    const target = normalizeInteractionTarget(itemOrId || activeInteractionTarget);
     const panel = document.getElementById('cloud-interaction-panel');
-    if (!item || !String(item.feedId || item.id || '').startsWith('approved-')) {
+    if (!target) {
       if (panel) panel.classList.add('hidden');
       return;
     }
-    activeInteractionSubmissionId = rawSubmissionId(item.id || item.feedId);
+    activeInteractionTarget = target;
+    activeInteractionSubmissionId = target.targetType === 'submission' ? target.targetId : '';
     if (!append) {
       activeReplyCommentId = '';
       loadedInteractionComments = [];
@@ -1070,7 +2523,7 @@
     try {
       const result = await callCore({
         action: 'getInteractions',
-        submissionId: activeInteractionSubmissionId,
+        ...interactionPayload(target),
         commentOffset: append ? loadedInteractionComments.length : 0,
         commentLimit: 10
       });
@@ -1084,12 +2537,42 @@
         loadedInteractionComments = incoming;
       }
       interactionHasMoreComments = Boolean(result.hasMoreComments);
-      updateApprovedInteractionState(activeInteractionSubmissionId, result);
+      if (target.targetType === 'submission') updateApprovedInteractionState(target.targetId, result);
       renderCloudComments(result);
-      if (typeof renderDiscoverFeed === 'function') renderDiscoverFeed();
+      if (target.targetType === 'submission' && typeof renderDiscoverFeed === 'function') renderDiscoverFeed();
     } catch (error) {
       if (list) list.innerHTML = `<div class="rounded-lg bg-red-50 p-3 text-[10px] text-red-700">${safeText(error.message)}</div>`;
     }
+  }
+
+  async function openCloudDiscussion(targetType, targetId, targetTitle) {
+    const target = normalizeInteractionTarget({ targetType, targetId, targetTitle });
+    if (!target) return;
+    const modal = document.getElementById('cloud-discussion-modal');
+    const reportButton = document.getElementById('cloud-report-submission');
+    if (reportButton) reportButton.classList.toggle('hidden', target.targetType !== 'submission');
+    if (modal) modal.classList.remove('hidden');
+    await loadCloudInteractions(target);
+    if (window.lucide) lucide.createIcons();
+  }
+
+  function openActiveCloudDiscussion() {
+    if (!activeInteractionTarget) {
+      if (typeof showToast === 'function') showToast('暂时无法读取这条内容的讨论', 'alert-circle');
+      return;
+    }
+    openCloudDiscussion(
+      activeInteractionTarget.targetType,
+      activeInteractionTarget.targetId,
+      activeInteractionTarget.targetTitle
+    );
+  }
+
+  function closeCloudDiscussion() {
+    const modal = document.getElementById('cloud-discussion-modal');
+    if (modal) modal.classList.add('hidden');
+    activeReplyCommentId = '';
+    updateReplyIndicator();
   }
 
   async function toggleCloudLike(id) {
@@ -1132,7 +2615,7 @@
     event.preventDefault();
     const input = document.getElementById('cloud-comment-input');
     const content = input ? input.value.trim() : '';
-    if (!activeInteractionSubmissionId || !content) {
+    if (!activeInteractionTarget || !content) {
       if (typeof showToast === 'function') showToast('请输入评论内容', 'message-square');
       return;
     }
@@ -1140,19 +2623,36 @@
     button.disabled = true;
     try {
       await requireInteractiveAccount();
+      const fingerprint = [
+        activeInteractionTarget.targetType,
+        activeInteractionTarget.targetId,
+        activeReplyCommentId,
+        content
+      ].join('|');
+      if (!pendingCommentRequestId || pendingCommentFingerprint !== fingerprint) {
+        pendingCommentRequestId = createClientRequestId();
+        pendingCommentFingerprint = fingerprint;
+      }
       await callCore({
         action: 'createComment',
-        submissionId: activeInteractionSubmissionId,
+        ...interactionPayload(activeInteractionTarget),
         parentId: activeReplyCommentId,
-        content
+        content,
+        clientRequestId: pendingCommentRequestId
       });
+      pendingCommentRequestId = '';
+      pendingCommentFingerprint = '';
       input.value = '';
+      const counter = document.getElementById('cloud-comment-count');
+      if (counter) counter.textContent = '0/500';
       activeReplyCommentId = '';
       updateReplyIndicator();
-      await loadCloudInteractions(activeInteractionSubmissionId);
+      await loadCloudInteractions(activeInteractionTarget);
       if (typeof showToast === 'function') showToast('评论已发布', 'message-square');
     } catch (error) {
-      if (typeof showToast === 'function') showToast(error.message, 'alert-circle');
+      const isBusy = /TransactionBusy|Transaction is busy|DATABASE_TRANSACTION_FAIL|COMMENT_SERVICE_BUSY/i.test(`${error.code || ''} ${error.message || ''}`);
+      const message = isBusy ? '当前参与评论的人较多，请稍等几秒再试' : error.message;
+      if (typeof showToast === 'function') showToast(message, 'alert-circle');
     } finally {
       button.disabled = false;
     }
@@ -1163,7 +2663,7 @@
     try {
       await requireInteractiveAccount();
       await callCore({ action: 'deleteComment', commentId });
-      await loadCloudInteractions(activeInteractionSubmissionId);
+      await loadCloudInteractions(activeInteractionTarget);
       if (typeof showToast === 'function') showToast('评论已删除', 'trash-2');
     } catch (error) {
       if (typeof showToast === 'function') showToast(error.message, 'alert-circle');
@@ -1183,7 +2683,7 @@
     try {
       await requireInteractiveAccount();
       activeReportTargetType = targetType === 'comment' ? 'comment' : 'submission';
-      activeReportTargetId = targetId || activeInteractionSubmissionId;
+      activeReportTargetId = targetId || (activeInteractionTarget && activeInteractionTarget.targetId) || activeInteractionSubmissionId;
       const modal = document.getElementById('cloud-report-modal');
       const label = document.getElementById('cloud-report-target-label');
       const detail = document.getElementById('cloud-report-detail');
@@ -1251,7 +2751,7 @@
     const slots = getDefaultSupplementSlots(item);
     container.innerHTML = slots.map((slot) => {
       const slotRecords = records.filter((record) => record.slotId === slot.id);
-      const mine = slotRecords.find((record) => ['pending', 'approved', 'rejected'].includes(record.status));
+      const mine = slotRecords.find((record) => record.isMine && ['pending', 'approved', 'rejected'].includes(record.status));
       const approved = slotRecords.filter((record) => record.status === 'approved');
       const isPending = mine && mine.status === 'pending';
       const isMineApproved = mine && mine.status === 'approved';
@@ -1308,9 +2808,34 @@
         renderCloudSupplementSlots(item);
       }
       if (typeof renderDiscoverFeed === 'function') renderDiscoverFeed();
+      return result;
     } catch (error) {
       console.warn('[CloudBase supplements]', error);
+      return null;
     }
+  }
+
+  async function startQuickStorySupplement(itemId) {
+    const item = findApprovedItem(itemId);
+    if (!item) return;
+    if (!isStableAccount(cloudUser)) {
+      openCloudLogin();
+      if (typeof showToast === 'function') showToast('登录后即可补充这段链迹', 'log-in');
+      return;
+    }
+    const submissionId = rawSubmissionId(item.id || item.feedId);
+    let state = cloudSupplementState.get(submissionId);
+    if (!state) state = await loadCloudSupplements(item);
+    const records = state && Array.isArray(state.items) ? state.items : [];
+    const slots = typeof getDefaultSupplementSlots === 'function' ? getDefaultSupplementSlots(item) : [];
+    const recommended = slots.find((slot) => !records.some((record) => (
+      record.slotId === slot.id && record.isMine && ['pending', 'approved'].includes(record.status)
+    )));
+    if (!recommended) {
+      if (typeof showToast === 'function') showToast(slots.length ? '你已完成这条链迹的可用补充' : '这条内容暂时没有可补充位置', 'info');
+      return;
+    }
+    triggerCloudSupplementUpload(item.id || item.feedId, recommended.id);
   }
 
   function triggerCloudSupplementUpload(itemId, slotId) {
@@ -1372,9 +2897,32 @@
 
   function openCloudDiscoverDetail(itemId) {
     if (legacyOpenDiscoverDetail) legacyOpenDiscoverDetail(itemId);
-    const item = findApprovedItem(itemId);
-    loadCloudInteractions(item || itemId);
-    loadCloudSupplements(item || itemId);
+    loadUnifiedRelatedResources(itemId);
+    const approvedItem = findApprovedItem(itemId);
+    if (approvedItem) {
+      setDiscoverDiscussionEntryAvailable(true);
+      loadCloudInteractions(approvedItem);
+      loadCloudSupplements(approvedItem);
+      return;
+    }
+
+    const discoverItem = typeof getDiscoverFeedItemById === 'function'
+      ? getDiscoverFeedItemById(itemId)
+      : null;
+    if (discoverItem && DISCUSSABLE_DISCOVER_CONTENT_IDS.has(String(discoverItem.id || ''))) {
+      const target = {
+        targetType: 'content',
+        targetId: String(discoverItem.id),
+        targetTitle: String(discoverItem.title || '发现内容')
+      };
+      setDiscoverDiscussionEntryAvailable(true);
+      loadCloudInteractions(target);
+      return;
+    }
+
+    activeInteractionTarget = null;
+    activeInteractionSubmissionId = '';
+    setDiscoverDiscussionEntryAvailable(false);
   }
 
   async function loadCloudPublicFeed() {
@@ -1445,7 +2993,10 @@
         longitude: currentLocation.longitude,
         latitude: currentLocation.latitude,
         locationAccuracy: currentLocation.accuracy,
-        regionName: '湖北'
+        regionName: '湖北',
+        aiAnalysisConsent: document.getElementById('collect-ai-consent')?.checked === true,
+        materialAnalysisConsent: document.getElementById('collect-material-consent')?.checked === true,
+        gapTaskId: activeStoryGapTask && activeStoryGapTask.id || ''
       });
       const aiTask = await enqueueCloudAiReview(result.submission.id);
 
@@ -1458,6 +3009,9 @@
       }
       const description = document.getElementById('collect-description');
       if (description) description.value = '';
+      const aiConsent = document.getElementById('collect-ai-consent');
+      if (aiConsent) aiConsent.checked = false;
+      clearStoryGapTask();
       await refreshCloudProfile();
       if (typeof switchTab === 'function') switchTab('profile');
     } catch (error) {
@@ -1477,6 +3031,8 @@
     injectAccountUi();
     injectLoginModal();
     injectProductModals();
+    injectStoryEvidenceModal();
+    document.getElementById('collect-gap-task-clear')?.addEventListener('click', clearStoryGapTask);
     const headerAccount = document.getElementById('header-account-entry');
     if (headerAccount && !headerAccount.dataset.cloudBound) {
       headerAccount.dataset.cloudBound = 'true';
@@ -1511,6 +3067,7 @@
   window.openDiscoverDetail = openCloudDiscoverDetail;
   window.renderSupplementSlots = renderCloudSupplementSlots;
   window.triggerDiscoverSupplementUpload = triggerCloudSupplementUpload;
+  window.startQuickStorySupplement = startQuickStorySupplement;
   window.handleDiscoverSupplementUpload = submitCloudSupplement;
   window.replyCloudComment = (commentId) => {
     activeReplyCommentId = commentId;
@@ -1521,14 +3078,38 @@
   };
   window.deleteCloudComment = deleteCloudComment;
   window.reportCloudContent = reportCloudContent;
+  window.openCloudDiscussion = openCloudDiscussion;
+  window.openActiveCloudDiscussion = openActiveCloudDiscussion;
+  window.closeCloudDiscussion = closeCloudDiscussion;
+  window.openStoryEvidence = openStoryEvidence;
+  window.closeStoryEvidence = closeStoryEvidence;
+  window.openUnifiedResourceDetail = openUnifiedResourceDetail;
+  window.closeUnifiedResourceDetail = closeUnifiedResourceDetail;
+  window.openCloudNotifications = openCloudNotifications;
   window.submitCloudManualReview = async () => {
     throw new Error('请使用正式提交按钮将素材写入 CloudBase 审核池');
   };
 
   document.addEventListener('DOMContentLoaded', async () => {
     prepareFormalCloudUi();
+    const notificationEntry = document.getElementById('header-notification-entry');
+    if (notificationEntry) notificationEntry.addEventListener('click', openCloudNotifications);
+    const notificationClose = document.getElementById('cloud-notification-close');
+    if (notificationClose) notificationClose.addEventListener('click', closeCloudNotifications);
+    const notificationReadAll = document.getElementById('cloud-notification-read-all');
+    if (notificationReadAll) notificationReadAll.addEventListener('click', markAllCloudNotificationsRead);
+    const notificationList = document.getElementById('cloud-notification-list');
+    if (notificationList) notificationList.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-notification-id]');
+      if (button) openCloudNotification(button.dataset.notificationId);
+    });
     const commentForm = document.getElementById('cloud-comment-form');
     if (commentForm) commentForm.addEventListener('submit', submitCloudComment);
+    const commentInput = document.getElementById('cloud-comment-input');
+    if (commentInput) commentInput.addEventListener('input', () => {
+      const counter = document.getElementById('cloud-comment-count');
+      if (counter) counter.textContent = `${commentInput.value.length}/500`;
+    });
     const cancelReply = document.getElementById('cloud-reply-cancel');
     if (cancelReply) cancelReply.addEventListener('click', () => {
       activeReplyCommentId = '';
@@ -1538,11 +3119,13 @@
     if (reportSubmission) reportSubmission.addEventListener('click', () => {
       reportCloudContent('submission', activeInteractionSubmissionId);
     });
+    const discussionClose = document.getElementById('cloud-discussion-close');
+    if (discussionClose) discussionClose.addEventListener('click', closeCloudDiscussion);
     const loadMoreComments = document.getElementById('cloud-comment-load-more');
     if (loadMoreComments) loadMoreComments.addEventListener('click', async () => {
       loadMoreComments.disabled = true;
       try {
-        await loadCloudInteractions(activeInteractionSubmissionId, { append: true });
+        await loadCloudInteractions(activeInteractionTarget, { append: true });
       } finally {
         loadMoreComments.disabled = false;
       }
@@ -1554,6 +3137,7 @@
     const reportCancel = document.getElementById('cloud-report-cancel');
     if (reportCancel) reportCancel.addEventListener('click', closeCloudReportModal);
     await refreshCloudProfile();
+    await loadUnifiedResources();
     await loadCloudPublicFeed();
     scheduleCloudPublicFeedRefresh();
   });
