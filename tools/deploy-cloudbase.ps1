@@ -1,7 +1,8 @@
 param(
   [switch]$StaticOnly,
   [switch]$FunctionsOnly,
-  [switch]$FullFunctionDeploy
+  [switch]$FullFunctionDeploy,
+  [switch]$ThemeOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +66,39 @@ function Invoke-CloudBaseCli {
   }
 }
 
+function Invoke-CloudBaseCliCapture {
+  param([Parameter(Mandatory = $true)][string[]]$CliArguments)
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    # CloudBase CLI writes progress messages to stderr even when the command succeeds.
+    # Capture both streams without allowing PowerShell to promote those messages to terminating errors.
+    $ErrorActionPreference = 'Continue'
+    if ($localTcb) {
+      $output = & $localTcb @CliArguments 2>&1
+    } elseif ($npxCommand) {
+      $output = & $npxCommand.Source --yes --package "@cloudbase/cli@$cloudbaseCliVersion" tcb @CliArguments 2>&1
+    } else {
+      throw 'CloudBase CLI was not found. Install Node.js/npm or add @cloudbase/cli as a dev dependency.'
+    }
+    $cliExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+
+  if ($cliExitCode -ne 0) {
+    throw "CloudBase CLI failed with exit code $cliExitCode."
+  }
+  return $output
+}
+
+function Test-CloudBaseFunctionExists {
+  param([Parameter(Mandatory = $true)][string]$FunctionName)
+
+  $output = Invoke-CloudBaseCliCapture -CliArguments @('fn', 'list', '-e', $environmentId, '--json', '--yes')
+  return (($output | Out-String) -match [regex]::Escape($FunctionName))
+}
+
 function Test-JavaScriptSyntax {
   param([Parameter(Mandatory = $true)][string]$ScriptPath)
 
@@ -87,10 +121,14 @@ try {
   $cloudbaseAppScript = Join-Path $staticDirectory 'cloudbase-app.js'
   $appCoreScript = Join-Path (Join-Path $cloudFunctionsDirectory 'appCore') 'index.js'
   $adminSubmissionsScript = Join-Path (Join-Path $cloudFunctionsDirectory 'adminSubmissions') 'index.js'
+  $storyWorkerScript = Join-Path (Join-Path $cloudFunctionsDirectory 'storyWorker') 'index.js'
+  $materialWorkerScript = Join-Path (Join-Path $cloudFunctionsDirectory 'materialWorker') 'index.js'
 
   Test-JavaScriptSyntax -ScriptPath $cloudbaseAppScript
   Test-JavaScriptSyntax -ScriptPath $appCoreScript
   Test-JavaScriptSyntax -ScriptPath $adminSubmissionsScript
+  Test-JavaScriptSyntax -ScriptPath $storyWorkerScript
+  Test-JavaScriptSyntax -ScriptPath $materialWorkerScript
 
   if (-not $StaticOnly) {
     if ($FullFunctionDeploy) {
@@ -107,9 +145,30 @@ try {
       Write-Host 'Updating adminSubmissions code while preserving cloud configuration...'
       Invoke-CloudBaseCli -CliArguments @('fn', 'code', 'update', 'adminSubmissions', '-e', $environmentId, '--deployMode', 'zip', '--yes')
     }
+
+    if (-not $ThemeOnly) {
+      if (Test-CloudBaseFunctionExists -FunctionName 'storyWorker') {
+        Write-Host 'Updating storyWorker code while preserving its API key and cloud configuration...'
+        Invoke-CloudBaseCli -CliArguments @('fn', 'code', 'update', 'storyWorker', '-e', $environmentId, '--deployMode', 'zip', '--yes')
+      } else {
+        Write-Warning 'storyWorker is not initialized yet. Existing deployment continues without it.'
+      }
+
+      if (Test-CloudBaseFunctionExists -FunctionName 'materialWorker') {
+        Write-Host 'Updating materialWorker code while preserving cloud configuration...'
+        Invoke-CloudBaseCli -CliArguments @('fn', 'code', 'update', 'materialWorker', '-e', $environmentId, '--deployMode', 'zip', '--yes')
+      } else {
+        Write-Host 'Creating materialWorker with its safe mock-only configuration...'
+        Invoke-CloudBaseCli -CliArguments @('fn', 'deploy', 'materialWorker', '-e', $environmentId, '--deployMode', 'zip', '--force')
+      }
+    }
   }
 
   if (-not $FunctionsOnly) {
+    $visualBaselineAsset = Join-Path (Join-Path $staticDirectory 'assets') 'community-hero-pagoda-v2.webp'
+    if (-not (Test-Path -LiteralPath $visualBaselineAsset)) {
+      throw 'Static deployment blocked: this worktree does not contain the latest visual-design baseline. Deploy static files from ui/visual-redesign or integrate that branch first.'
+    }
     $temporaryParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     $hostingDirectory = Join-Path $temporaryParent ("chulink-cloudbase-" + [guid]::NewGuid().ToString('N'))
     $hostingStaticDirectory = Join-Path $hostingDirectory 'static'
@@ -119,15 +178,57 @@ try {
       $hostingRootFiles = @(
         (Join-Path $projectRoot 'index.html'),
         (Join-Path $projectRoot 'admin.html'),
+        (Join-Path $projectRoot 'themes.html'),
+        (Join-Path $projectRoot 'guide.html'),
         (Join-Path $projectRoot 'hubei_boundary.geojson')
       )
       $hostingStaticFiles = @(
         (Join-Path $staticDirectory 'cloudbase-app.js'),
+        (Join-Path $staticDirectory 'admin-agent-review.js'),
+        (Join-Path $staticDirectory 'admin-story-themes.js'),
+        (Join-Path $staticDirectory 'theme-page.js'),
+        (Join-Path $staticDirectory 'theme-paper.css'),
+        (Join-Path $staticDirectory 'theme-float.css'),
+        (Join-Path $staticDirectory 'theme-float.js'),
+        (Join-Path $staticDirectory 'content-effects.js'),
+        (Join-Path $staticDirectory 'admin-content-effects.js'),
+        (Join-Path $staticDirectory 'admin-content-effects.css'),
+        (Join-Path $staticDirectory 'visit-engine.js'),
+        (Join-Path $staticDirectory 'visit-route.js'),
+        (Join-Path $staticDirectory 'guide-cloud.js'),
+        (Join-Path $staticDirectory 'guide-entry.js'),
+        (Join-Path $staticDirectory 'cultural-guide.js'),
+        (Join-Path $staticDirectory 'visit-planner.js'),
+        (Join-Path $staticDirectory 'guide-conversation.js'),
+        (Join-Path $staticDirectory 'guide-content.js'),
+        (Join-Path $staticDirectory 'guide-route.js'),
+        (Join-Path $staticDirectory 'guide-record.js'),
+        (Join-Path $staticDirectory 'guide-contribution.js'),
+        (Join-Path $staticDirectory 'admin-guide-official.js'),
+        (Join-Path $staticDirectory 'admin-guide.js'),
+        (Join-Path $staticDirectory 'admin-guide-trial.js'),
+        (Join-Path $staticDirectory 'cultural-guide.css'),
+        (Join-Path $staticDirectory 'admin-guide.css'),
+        (Join-Path $staticDirectory 'discover-paper.css'),
+        (Join-Path $staticDirectory 'discover-paper.js'),
+        (Join-Path $staticDirectory 'profile-paper.css'),
+        (Join-Path $staticDirectory 'profile-paper.js'),
+        (Join-Path $staticDirectory 'community-paper.css'),
+        (Join-Path $staticDirectory 'field-paper.css'),
+        (Join-Path $staticDirectory 'field-paper.js'),
+        (Join-Path $staticDirectory 'map-paper-edge.css'),
+        (Join-Path $staticDirectory 'map-paper-edge.js'),
+        (Join-Path $staticDirectory 'paper-editorial.css'),
+        (Join-Path $staticDirectory 'paper-editorial.js'),
+        (Join-Path $staticDirectory 'paper-motion.js'),
+        (Join-Path $staticDirectory 'navigation-motion.js'),
+        (Join-Path $staticDirectory 'navigation-motion.css'),
         (Join-Path $staticDirectory 'logo.png'),
         (Join-Path $staticDirectory 'map-config.js')
       )
       Copy-Item -LiteralPath $hostingRootFiles -Destination $hostingDirectory
       Copy-Item -LiteralPath $hostingStaticFiles -Destination $hostingStaticDirectory
+      Copy-Item -LiteralPath (Join-Path $staticDirectory 'assets') -Destination $hostingStaticDirectory -Recurse
 
       Write-Host 'Deploying static hosting...'
       Invoke-CloudBaseCli -CliArguments @('hosting', 'deploy', $hostingDirectory, '-e', $environmentId, '--concurrency', '2', '--retry-count', '3')
